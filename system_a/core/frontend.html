@@ -1,0 +1,556 @@
+<!--
+  AgriVision System A — 前端页面（单文件 SPA）
+  =============================================
+  纯 HTML/CSS/JS 实现，无需构建工具。功能：
+    - 拖拽/点击上传叶片图片
+    - 异步调用后端五引擎诊断（分类+检测+分割+CLIP+LLM报告）
+    - 可视化展示：分类结果、检测框、分割轮廓、CLIP 相似度、诊断报告
+    - 诊断历史查看/导出/清空
+  API 地址自动检测同源（服务器部署时自动适配），也可通过设置面板手动覆盖。
+  由 app_fastapi.py 根路由 "/" 直接托管返回。
+-->
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>智能大棚病虫害诊断</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Roboto, sans-serif; background: #f4f9f4; min-height: 100vh; display: flex; justify-content: center; padding: 20px; }
+        .container { background: #fff; max-width: 720px; width: 100%; padding: 36px 32px; border-radius: 28px; box-shadow: 0 20px 60px rgba(34,78,34,.12); align-self: flex-start; }
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+        h1 { font-size: 26px; color: #1b3b1b; }
+        .settings-btn { background: none; border: 1px solid #d0dcc0; border-radius: 8px; padding: 6px 12px; cursor: pointer; font-size: 13px; color: #5a7a5a; transition: all .2s; }
+        .settings-btn:hover { background: #f0f7f0; border-color: #4caf50; }
+        .subtitle { color: #5a7a5a; font-size: 14px; border-left: 4px solid #4caf50; padding: 6px 14px; background: #f0f7f0; border-radius: 0 8px 8px 0; margin-bottom: 24px; }
+        .upload-area { border: 2px dashed #bcd0bc; border-radius: 18px; padding: 36px 20px; text-align: center; cursor: pointer; transition: all .25s; background: #fafffa; margin-bottom: 20px; }
+        .upload-area:hover { border-color: #4caf50; background: #f0faf0; }
+        .upload-area.dragover { border-color: #2e7d32; background: #e8f5e9; transform: scale(1.01); }
+        .upload-icon { font-size: 44px; margin-bottom: 8px; }
+        .upload-text { color: #2d4a2d; font-weight: 500; font-size: 15px; }
+        .upload-hint { color: #7a9a7a; font-size: 13px; margin-top: 6px; }
+        #file-input { display: none; }
+        .preview-area { display: none; margin-bottom: 20px; text-align: center; }
+        canvas { max-width: 100%; border-radius: 14px; box-shadow: 0 4px 12px rgba(0,0,0,.08); border: 1px solid #e0ece0; }
+        .btn-submit { background: #2e7d32; color: #fff; border: none; padding: 13px 0; width: 100%; border-radius: 50px; font-size: 17px; font-weight: 600; cursor: pointer; transition: background .2s; box-shadow: 0 4px 10px rgba(46,125,50,.25); }
+        .btn-submit:hover { background: #1b5e20; }
+        .btn-submit:disabled { background: #a0b8a0; cursor: not-allowed; box-shadow: none; }
+        .loader { display: none; text-align: center; margin: 18px 0; color: #5a7a5a; font-size: 14px; }
+        .loader .spinner { display: inline-block; width: 28px; height: 28px; border: 3px solid #e0ece0; border-top-color: #2e7d32; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle; margin-right: 8px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .error-msg { display: none; padding: 12px 16px; background: #fff3f3; border: 1px solid #ffcdd2; border-radius: 10px; color: #c62828; font-size: 14px; margin: 14px 0; }
+        .result-card { margin-top: 24px; padding: 20px; border-radius: 18px; border-left: 7px solid #ccc; background: #fafffa; display: none; box-shadow: 0 4px 12px rgba(0,0,0,.04); }
+        .result-card.show { display: block; }
+        .result-card.healthy { border-left-color: #43a047; }
+        .result-card.disease { border-left-color: #e53935; }
+        .result-card.pest { border-left-color: #fb8c00; }
+        .result-label { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
+        .result-conf { font-size: 16px; color: #3a5a3a; }
+        .result-objects { margin-top: 6px; font-size: 14px; color: #666; }
+        .color-healthy { color: #43a047; }
+        .color-disease { color: #e53935; }
+        .color-pest { color: #fb8c00; }
+        .section-title { font-size: 15px; font-weight: 600; color: #2d4a2d; margin: 24px 0 10px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; user-select: none; }
+        .section-title .toggle { font-size: 12px; color: #7a9a7a; }
+        .history-list { max-height: 240px; overflow-y: auto; }
+        .history-item { display: flex; align-items: center; padding: 8px 10px; border-bottom: 1px solid #eef5ee; font-size: 13px; gap: 10px; }
+        .history-item:hover { background: #f8fcf8; }
+        .history-thumb { width: 40px; height: 40px; border-radius: 6px; object-fit: cover; flex-shrink: 0; }
+        .history-info { flex: 1; min-width: 0; }
+        .history-class { font-weight: 600; }
+        .history-time { color: #999; font-size: 12px; }
+        .history-empty { color: #aaa; font-size: 13px; padding: 10px 0; }
+        .clear-btn { font-size: 12px; color: #999; cursor: pointer; border: none; background: none; padding: 2px 8px; }
+        .clear-btn:hover { color: #e53935; }
+        .export-btns { display: inline-flex; gap: 6px; }
+        .export-btn { font-size: 11px; color: #5a7a5a; cursor: pointer; border: 1px solid #d0dcc0; background: #f9fdf9; border-radius: 4px; padding: 1px 8px; transition: all .2s; }
+        .export-btn:hover { background: #e8f5e9; border-color: #4caf50; }
+        .history-placeholder { width: 40px; height: 40px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: 700; color: #fff; flex-shrink: 0; }
+        .settings-panel { display: none; padding: 14px; background: #f9fdf9; border: 1px solid #d0dcc0; border-radius: 12px; margin-bottom: 20px; }
+        .settings-panel label { display: block; font-size: 13px; color: #5a7a5a; margin-bottom: 4px; }
+        .settings-panel input { width: 100%; padding: 8px 10px; border: 1px solid #ccdacc; border-radius: 8px; font-size: 13px; }
+        .settings-panel button { margin-top: 8px; padding: 6px 18px; background: #2e7d32; color: #fff; border: none; border-radius: 8px; cursor: pointer; font-size: 13px; }
+        .footer-note { margin-top: 18px; font-size: 12px; color: #8aa88a; text-align: center; border-top: 1px solid #eaf3ea; padding-top: 14px; }
+        .clip-section { margin-top: 18px; padding: 16px; background: #f9fdf9; border: 1px solid #e0ece0; border-radius: 14px; display: none; }
+        .clip-section.show { display: block; }
+        .clip-title { font-size: 14px; font-weight: 600; color: #2d4a2d; margin-bottom: 10px; }
+        .clip-bar-row { display: flex; align-items: center; margin-bottom: 5px; font-size: 12px; }
+        .clip-bar-label { width: 110px; flex-shrink: 0; text-align: right; padding-right: 8px; color: #5a7a5a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .clip-bar { flex: 1; height: 16px; background: #eef5ee; border-radius: 8px; overflow: hidden; position: relative; }
+        .clip-bar-fill { height: 100%; border-radius: 8px; transition: width .6s ease; min-width: 2px; }
+        .clip-bar-value { width: 46px; flex-shrink: 0; text-align: right; color: #3a5a3a; font-weight: 500; padding-left: 6px; }
+        .clip-bar-row.top .clip-bar-label { font-weight: 700; color: #1b3b1b; }
+        .clip-bar-row.top .clip-bar-value { font-weight: 700; }
+        .btn-report { background: #5c6bc0; color: #fff; border: none; padding: 10px 0; width: 100%; border-radius: 50px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background .2s; margin-top: 14px; box-shadow: 0 3px 8px rgba(92,107,192,.25); display: none; }
+        .btn-report:hover { background: #3f51b5; }
+        .btn-report:disabled { background: #b0b8d0; cursor: not-allowed; box-shadow: none; }
+        .report-section { margin-top: 18px; padding: 18px; background: #f5f7ff; border: 1px solid #c5cae9; border-radius: 14px; display: none; }
+        .report-section.show { display: block; }
+        .report-title { font-size: 14px; font-weight: 600; color: #283593; margin-bottom: 10px; }
+        .report-text { font-size: 14px; color: #37474f; line-height: 1.7; white-space: pre-wrap; }
+        .report-loader { display: none; text-align: center; color: #5c6bc0; font-size: 13px; padding: 12px 0; }
+        .report-loader .spinner { display: inline-block; width: 20px; height: 20px; border: 2px solid #c5cae9; border-top-color: #5c6bc0; border-radius: 50%; animation: spin .8s linear infinite; vertical-align: middle; margin-right: 6px; }
+        @media (max-width: 520px) {
+            body { padding: 10px; }
+            .container { padding: 24px 16px; border-radius: 20px; }
+            h1 { font-size: 22px; }
+            .upload-area { padding: 28px 14px; }
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>🌿 智能大棚诊断</h1>
+        <button class="settings-btn" onclick="toggleSettings()">⚙ 设置</button>
+    </div>
+    <div class="subtitle">上传叶片照片，AI 自动分类、检测并分割病虫害区域</div>
+
+    <div class="settings-panel" id="settings-panel">
+        <label>API 服务地址</label>
+        <input type="text" id="api-url" placeholder="默认自动检测，如需手动覆盖输入完整地址">
+        <button onclick="saveSettings()">保存</button>
+    </div>
+
+    <div class="upload-area" id="drop-area">
+        <div class="upload-icon">📸</div>
+        <div class="upload-text">点击选择图片 或 拖拽图片至此</div>
+        <div class="upload-hint">支持 JPG / PNG，最大 10MB</div>
+        <input type="file" id="file-input" accept="image/*">
+    </div>
+
+    <div class="preview-area" id="preview-area">
+        <canvas id="result-canvas"></canvas>
+    </div>
+
+    <button class="btn-submit" id="submit-btn" disabled>🧪 开始诊断</button>
+
+    <div class="loader" id="loader"><span class="spinner"></span>正在分析中…</div>
+    <div class="error-msg" id="error-msg"></div>
+
+    <div class="result-card" id="result-card">
+        <div class="result-label" id="result-label">--</div>
+        <div class="result-conf">置信度：<span id="result-conf">--</span></div>
+        <div class="result-objects">检测到 <span id="object-count">0</span> 个目标</div>
+        <div class="result-seg" id="result-seg" style="display:none;margin-top:6px;font-size:14px;color:#666">
+            分割：<span id="seg-count">0</span> 个区域，最大占比 <span id="seg-max-area">--</span>
+        </div>
+    </div>
+
+    <div class="clip-section" id="clip-section">
+        <div class="clip-title">CLIP 零样本相似度</div>
+        <div id="clip-bars"></div>
+    </div>
+
+    <button class="btn-report" id="report-btn" onclick="generateReport()">🤖 AI 诊断报告（Qwen2-VL 多模态）</button>
+    <div class="report-loader" id="report-loader"><span class="spinner"></span>LLM 正在生成报告，请稍候…</div>
+    <div class="report-section" id="report-section">
+        <div class="report-title">📝 诊断报告</div>
+        <div class="report-text" id="report-text"></div>
+    </div>
+
+    <div class="section-title" onclick="toggleHistory()">
+        📋 诊断历史 <span class="toggle" id="historyToggle">▶</span>
+    </div>
+    <div class="history-list" id="history-list" style="display:none">
+        <div style="text-align:right;padding:4px 10px">
+            <span class="export-btns">
+                <button class="export-btn" onclick="exportHistory('json')">JSON</button>
+                <button class="export-btn" onclick="exportHistory('csv')">CSV</button>
+            </span>
+            <button class="clear-btn" onclick="clearHistory()">清空</button>
+        </div>
+        <div class="history-empty" id="history-empty">暂无记录</div>
+    </div>
+
+    <div class="footer-note">分类 + 检测 + 分割 + CLIP + LLM 五引擎 · FastAPI 微服务</div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const dropArea = $('drop-area'), fileInput = $('file-input'),
+      previewArea = $('preview-area'), canvas = $('result-canvas'),
+      ctx = canvas.getContext('2d'), submitBtn = $('submit-btn'),
+      loader = $('loader'), resultCard = $('result-card'),
+      errorMsg = $('error-msg');
+
+let selectedFile = null, originalImage = null;
+const history = [];
+let backendHistory = [];
+const CLASS_COLORS = { disease: '#e53935', pest: '#fb8c00' };
+const CLASS_NAMES  = { disease: '病害', pest: '虫害' };
+const SEG_COLORS = [
+    'rgba(229,57,53,0.35)', 'rgba(251,140,0,0.35)', 'rgba(56,142,60,0.35)',
+    'rgba(30,136,229,0.35)', 'rgba(142,36,170,0.35)', 'rgba(0,151,167,0.35)',
+    'rgba(255,179,0,0.35)', 'rgba(124,179,66,0.35)',
+];
+const SEG_BORDERS = [
+    '#e53935', '#fb8c00', '#388e3c', '#1e88e5',
+    '#8e24aa', '#0097a7', '#ffb300', '#7cb342',
+];
+
+// 服务器部署时自动同源；本地 file:// 打开时回退到 localhost
+let API_BASE = (window.location.origin && window.location.origin !== 'null')
+    ? window.location.origin
+    : 'http://127.0.0.1:8000';
+
+function toggleSettings() {
+    const p = $('settings-panel');
+    const show = p.style.display === 'none';
+    p.style.display = show ? 'block' : 'none';
+    if (show) $('api-url').value = API_BASE;
+}
+function saveSettings() {
+    const url = $('api-url').value.trim();
+    if (url) API_BASE = url.replace(/\/+$/, '');
+    $('settings-panel').style.display = 'none';
+}
+
+dropArea.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => { if (e.target.files[0]) handleFile(e.target.files[0]); });
+['dragover', 'dragleave', 'drop'].forEach(evt => {
+    dropArea.addEventListener(evt, e => {
+        e.preventDefault();
+        if (evt === 'dragover') dropArea.classList.add('dragover');
+        else dropArea.classList.remove('dragover');
+        if (evt === 'drop' && e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+    });
+});
+
+function handleFile(file) {
+    hideError();
+    if (!file.type.startsWith('image/')) return showError('请选择图片文件（JPG / PNG）');
+    if (file.size > 10 * 1024 * 1024) return showError('图片不能超过 10MB');
+    selectedFile = file;
+    const reader = new FileReader();
+    reader.onload = e => {
+        const img = new Image();
+        img.onload = () => {
+            canvas.width = img.width; canvas.height = img.height;
+            ctx.drawImage(img, 0, 0);
+            originalImage = img;
+            previewArea.style.display = 'block';
+            submitBtn.disabled = false;
+            resultCard.classList.remove('show');
+            $('clip-section').classList.remove('show');
+            $('report-btn').style.display = 'none';
+            $('report-section').classList.remove('show');
+            $('report-text').textContent = '';
+        };
+        img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+}
+
+submitBtn.addEventListener('click', async () => {
+    if (!selectedFile) return;
+    submitBtn.disabled = true;
+    loader.style.display = 'block';
+    loader.querySelector('.spinner').nextSibling.textContent = '提交任务中…';
+    resultCard.classList.remove('show');
+    hideError();
+    const form = new FormData();
+    form.append('file', selectedFile);
+    try {
+        // 1. 提交异步任务
+        const res = await fetch(API_BASE + '/diagnose/async', { method: 'POST', body: form });
+        if (!res.ok) {
+            const detail = (await res.json().catch(() => ({}))).detail || '服务器错误';
+            throw new Error(detail);
+        }
+        const { task_id, status, cached } = await res.json();
+
+        // 缓存命中，直接显示
+        if (status === 'done' && cached) {
+            const pollRes = await fetch(API_BASE + '/result/' + task_id);
+            const taskData = await pollRes.json();
+            showResult(taskData.result.predict, taskData.result.detect, taskData.result.segment, taskData.result.clip);
+            addHistory(taskData.result.predict, taskData.result.detect, taskData.result.segment);
+            $('report-btn').style.display = 'block';
+            loader.style.display = 'none';
+            submitBtn.disabled = false;
+            return;
+        }
+
+        // 2. 轮询结果（每 500ms 查一次，最多 60s）
+        loader.querySelector('.spinner').nextSibling.textContent = '正在分析中…';
+        const maxWait = 120;  // 120 × 500ms = 60s
+        let done = false;
+        for (let i = 0; i < maxWait; i++) {
+            await new Promise(r => setTimeout(r, 500));
+            const pollRes = await fetch(API_BASE + '/result/' + task_id);
+            const taskData = await pollRes.json();
+            if (taskData.status === 'done') {
+                showResult(taskData.result.predict, taskData.result.detect, taskData.result.segment, taskData.result.clip);
+                addHistory(taskData.result.predict, taskData.result.detect, taskData.result.segment);
+                $('report-btn').style.display = 'block';
+                done = true;
+                break;
+            } else if (taskData.status === 'failed') {
+                throw new Error(taskData.error || '诊断失败');
+            }
+        }
+        if (!done) throw new Error('诊断超时，请稍后重试');
+    } catch (e) {
+        const msg = e.message.includes('Failed to fetch')
+            ? '无法连接服务，请确认后端已启动（' + API_BASE + '）'
+            : '诊断失败：' + e.message;
+        showError(msg);
+    } finally {
+        submitBtn.disabled = false;
+        loader.style.display = 'none';
+    }
+});
+
+function showResult(pred, det, seg, clip) {
+    const isHealthy = pred.class === '健康';
+    const key = isHealthy ? 'healthy' : 'disease';
+    resultCard.className = 'result-card show ' + key;
+    $('result-label').textContent = pred.class;
+    $('result-label').className = 'result-label color-' + key;
+    $('result-conf').textContent = (pred.confidence * 100).toFixed(1) + '%';
+    const boxes = det.boxes || [];
+    $('object-count').textContent = boxes.length;
+
+    // 分割信息
+    const segDiv = $('result-seg');
+    if (seg && seg.total_objects > 0) {
+        segDiv.style.display = 'block';
+        $('seg-count').textContent = seg.total_objects;
+        const maxArea = Math.max(...seg.segments.map(s => s.area_ratio));
+        $('seg-max-area').textContent = (maxArea * 100).toFixed(1) + '%';
+    } else {
+        segDiv.style.display = 'none';
+    }
+
+    // CLIP 相似度条形图
+    const clipSection = $('clip-section');
+    const clipBars = $('clip-bars');
+    if (clip && clip.scores) {
+        clipSection.classList.add('show');
+        // 按分数降序排列
+        const sorted = Object.entries(clip.scores).sort((a, b) => b[1] - a[1]);
+        const maxScore = sorted[0][1];
+        let html = '';
+        for (const [name, score] of sorted) {
+            const pct = (score * 100).toFixed(1);
+            const width = maxScore > 0 ? (score / maxScore * 100).toFixed(1) : 0;
+            const isTop = name === clip.top_class;
+            const color = name === '健康' ? '#43a047' : (isTop ? '#e53935' : '#90a4ae');
+            const rowClass = isTop ? 'clip-bar-row top' : 'clip-bar-row';
+            html += '<div class="' + rowClass + '">' +
+                '<span class="clip-bar-label">' + name + '</span>' +
+                '<div class="clip-bar"><div class="clip-bar-fill" style="width:' + width + '%;background:' + color + '"></div></div>' +
+                '<span class="clip-bar-value">' + pct + '%</span></div>';
+        }
+        clipBars.innerHTML = html;
+    } else {
+        clipSection.classList.remove('show');
+    }
+
+    if (originalImage) {
+        ctx.drawImage(originalImage, 0, 0);
+        const s = Math.max(1, Math.round(Math.max(canvas.width, canvas.height) / 800));
+
+        // 1) 先画分割多边形（半透明填充 + 边框）
+        if (seg && seg.segments) {
+            for (let i = 0; i < seg.segments.length; i++) {
+                const segItem = seg.segments[i];
+                const poly = segItem.polygon;
+                if (!poly || poly.length < 3) continue;
+                const ci = i % SEG_COLORS.length;
+
+                // 填充半透明区域
+                ctx.beginPath();
+                ctx.moveTo(poly[0][0], poly[0][1]);
+                for (let j = 1; j < poly.length; j++) {
+                    ctx.lineTo(poly[j][0], poly[j][1]);
+                }
+                ctx.closePath();
+                ctx.fillStyle = SEG_COLORS[ci];
+                ctx.fill();
+
+                // 边框
+                ctx.strokeStyle = SEG_BORDERS[ci];
+                ctx.lineWidth = 2 * s;
+                ctx.stroke();
+
+                // 标签：类名 + 面积占比
+                const label = segItem.class + ' ' + (segItem.area_ratio * 100).toFixed(1) + '%';
+                ctx.font = 'bold ' + (13 * s) + 'px Arial';
+                const tw = ctx.measureText(label).width;
+                const lx = poly[0][0], ly = poly[0][1] - 6 * s;
+                ctx.fillStyle = SEG_BORDERS[ci];
+                ctx.fillRect(lx, ly - 14 * s, tw + 8 * s, 18 * s);
+                ctx.fillStyle = '#fff';
+                ctx.fillText(label, lx + 4 * s, ly);
+            }
+        }
+
+        // 2) 再画检测框（在分割上层）
+        ctx.lineWidth = 2 * s;
+        ctx.font = 'bold ' + (14 * s) + 'px Arial';
+        for (const b of boxes) {
+            const color = CLASS_COLORS[b.class] || '#e53935';
+            const label = (CLASS_NAMES[b.class] || b.class) + ' ' + (b.confidence * 100).toFixed(0) + '%';
+            ctx.strokeStyle = color;
+            ctx.strokeRect(b.x1, b.y1, b.x2 - b.x1, b.y2 - b.y1);
+            const tw = ctx.measureText(label).width, th = 16 * s;
+            ctx.fillStyle = color;
+            ctx.fillRect(b.x1, b.y1 - th - 4 * s, tw + 8 * s, th + 4 * s);
+            ctx.fillStyle = '#fff';
+            ctx.fillText(label, b.x1 + 4 * s, b.y1 - 6 * s);
+        }
+    }
+}
+
+async function generateReport() {
+    if (!selectedFile) return;
+    const btn = $('report-btn');
+    const loaderEl = $('report-loader');
+    const section = $('report-section');
+    const textEl = $('report-text');
+
+    btn.disabled = true;
+    loaderEl.style.display = 'block';
+    section.classList.remove('show');
+    textEl.textContent = '';
+
+    try {
+        const form = new FormData();
+        form.append('file', selectedFile);
+        const res = await fetch(API_BASE + '/report', { method: 'POST', body: form });
+        if (!res.ok) {
+            const detail = (await res.json().catch(() => ({}))).detail || '服务器错误';
+            throw new Error(detail);
+        }
+        const data = await res.json();
+        // 打字机效果显示报告
+        section.classList.add('show');
+        const fullText = data.report;
+        let i = 0;
+        const typeInterval = setInterval(() => {
+            if (i < fullText.length) {
+                textEl.textContent += fullText[i];
+                i++;
+            } else {
+                clearInterval(typeInterval);
+            }
+        }, 30);
+    } catch (e) {
+        const msg = e.message.includes('Failed to fetch')
+            ? '无法连接服务'
+            : '报告生成失败：' + e.message;
+        showError(msg);
+    } finally {
+        btn.disabled = false;
+        loaderEl.style.display = 'none';
+    }
+}
+
+function showError(msg) { errorMsg.textContent = msg; errorMsg.style.display = 'block'; }
+function hideError() { errorMsg.style.display = 'none'; }
+
+function addHistory(pred, det, seg) {
+    const segCount = (seg && seg.total_objects) || 0;
+    history.unshift({
+        thumb: canvas.toDataURL('image/jpeg', 0.3),
+        cls: pred.class, conf: pred.confidence,
+        count: (det.boxes || []).length,
+        segCount: segCount,
+        time: new Date().toLocaleTimeString('zh-CN', { hour12: false })
+    });
+    if (history.length > 20) history.pop();
+    renderHistory();
+}
+
+function renderHistory() {
+    const list = $('history-list');
+
+    function classColor(cls) {
+        if (cls === '健康') return '#43a047';
+        return '#e53935';
+    }
+    function classKey(cls) {
+        return cls === '健康' ? 'healthy' : 'disease';
+    }
+
+    // Merge: local session items first (with thumbnails), then backend items (with placeholders)
+    const allItems = [];
+
+    // Local items (have thumbnails)
+    for (const h of history) {
+        const segInfo = h.segCount ? ' · 分割 ' + h.segCount + ' 区' : '';
+        allItems.push(
+            '<div class="history-item"><img class="history-thumb" src="' + h.thumb + '">' +
+            '<div class="history-info"><span class="history-class color-' + classKey(h.cls) + '">' + h.cls + '</span> ' +
+            (h.conf*100).toFixed(0) + '% \u00b7 ' + h.count + ' 个目标' + segInfo + '</div>' +
+            '<span class="history-time">' + h.time + '</span></div>'
+        );
+    }
+
+    // Backend items (no thumbnails, use colored placeholder)
+    for (const b of backendHistory) {
+        const color = classColor(b.class);
+        const initial = b.class.charAt(0);
+        const boxInfo = b.boxes && b.boxes.length ? b.boxes.length + ' 个目标' : '0 个目标';
+        allItems.push(
+            '<div class="history-item"><div class="history-placeholder" style="background:' + color + '">' + initial + '</div>' +
+            '<div class="history-info"><span class="history-class color-' + classKey(b.class) + '">' + b.class + '</span> ' +
+            (b.confidence*100).toFixed(0) + '% \u00b7 ' + boxInfo + '</div>' +
+            '<span class="history-time">' + b.time + '</span></div>'
+        );
+    }
+
+    // Keep the export/clear buttons, replace content below
+    const header = list.querySelector('div[style]');
+    if (!allItems.length) {
+        list.innerHTML = '';
+        if (header) list.prepend(header);
+        else list.innerHTML = '<div class="history-empty">暂无记录</div>';
+        if (!list.querySelector('.history-empty')) list.innerHTML = '<div style="text-align:right;padding:4px 10px"><span class="export-btns"><button class="export-btn" onclick="exportHistory(\'json\')">JSON</button><button class="export-btn" onclick="exportHistory(\'csv\')">CSV</button></span><button class="clear-btn" onclick="clearHistory()">清空</button></div><div class="history-empty">暂无记录</div>';
+    } else {
+        list.innerHTML = '<div style="text-align:right;padding:4px 10px"><span class="export-btns"><button class="export-btn" onclick="exportHistory(\'json\')">JSON</button><button class="export-btn" onclick="exportHistory(\'csv\')">CSV</button></span><button class="clear-btn" onclick="clearHistory()">清空</button></div>' + allItems.join('');
+    }
+}
+
+async function loadBackendHistory() {
+    try {
+        const res = await fetch(API_BASE + '/history?limit=50');
+        if (!res.ok) return;
+        backendHistory = await res.json();
+        if (backendHistory.length) {
+            $('history-list').style.display = 'block';
+            $('historyToggle').textContent = '\u25bc';
+        }
+        renderHistory();
+    } catch(e) { /* server not reachable */ }
+}
+
+function exportHistory(format) {
+    if (format === 'json') {
+        window.open(API_BASE + '/history/export', '_blank');
+    } else if (format === 'csv') {
+        window.open(API_BASE + '/history/export/csv', '_blank');
+    }
+}
+
+async function clearHistory() {
+    history.length = 0;
+    backendHistory = [];
+    renderHistory();
+    try { await fetch(API_BASE + '/history', { method: 'DELETE' }); } catch(e) {}
+}
+
+function toggleHistory() {
+    const list = $('history-list'), hint = $('historyToggle');
+    if (list.style.display === 'none') { list.style.display = 'block'; hint.textContent = '\u25bc'; renderHistory(); }
+    else { list.style.display = 'none'; hint.textContent = '\u25b6'; }
+}
+
+// Load backend history on page load
+document.addEventListener('DOMContentLoaded', loadBackendHistory);
+</script>
+</body>
+</html>

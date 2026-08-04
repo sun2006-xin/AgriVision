@@ -1,0 +1,13 @@
+{
+  "_说明": "AgriVision System B 多摄像头配置。在 cameras 数组中追加条目即可添加摄像头。url=拍照接口, base=控制面板。system_a_url 用于跳转到 System A 深度诊断。",
+  "cameras": [
+    {
+      "id": "cam1",
+      "name": "1号温室-左侧",
+      "url": "http://【请修改：摄像头IP地址】/capture",
+      "base": "http://【请修改：摄像头IP地址】",
+      "enabled": true
+    }
+  ],
+  "system_a_url": "http://127.0.0.1:8000"
+}

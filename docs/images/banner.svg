@@ -1,0 +1,93 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 400" font-family="system-ui, -apple-system, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a2e1a"/>
+      <stop offset="50%" style="stop-color:#1a5c3a"/>
+      <stop offset="100%" style="stop-color:#0d4a2a"/>
+    </linearGradient>
+    <linearGradient id="glow" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#4caf50;stop-opacity:0"/>
+      <stop offset="50%" style="stop-color:#4caf50;stop-opacity:0.3"/>
+      <stop offset="100%" style="stop-color:#4caf50;stop-opacity:0"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Background -->
+  <rect width="1200" height="400" fill="url(#bg)"/>
+  
+  <!-- Grid pattern -->
+  <g opacity="0.1" stroke="#4caf50" stroke-width="0.5">
+    <line x1="0" y1="50" x2="1200" y2="50"/>
+    <line x1="0" y1="100" x2="1200" y2="100"/>
+    <line x1="0" y1="150" x2="1200" y2="150"/>
+    <line x1="0" y1="200" x2="1200" y2="200"/>
+    <line x1="0" y1="250" x2="1200" y2="250"/>
+    <line x1="0" y1="300" x2="1200" y2="300"/>
+    <line x1="0" y1="350" x2="1200" y2="350"/>
+    <line x1="100" y1="0" x2="100" y2="400"/>
+    <line x1="200" y1="0" x2="200" y2="400"/>
+    <line x1="300" y1="0" x2="300" y2="400"/>
+    <line x1="400" y1="0" x2="400" y2="400"/>
+    <line x1="500" y1="0" x2="500" y2="400"/>
+    <line x1="600" y1="0" x2="600" y2="400"/>
+    <line x1="700" y1="0" x2="700" y2="400"/>
+    <line x1="800" y1="0" x2="800" y2="400"/>
+    <line x1="900" y1="0" x2="900" y2="400"/>
+    <line x1="1000" y1="0" x2="1000" y2="400"/>
+    <line x1="1100" y1="0" x2="1100" y2="400"/>
+  </g>
+  
+  <!-- Glow line -->
+  <rect x="0" y="195" width="1200" height="10" fill="url(#glow)"/>
+  
+  <!-- Left: Camera/ESP32 icon -->
+  <g transform="translate(150, 150)">
+    <rect x="-40" y="-30" width="80" height="60" rx="8" fill="none" stroke="#81c784" stroke-width="2"/>
+    <circle cx="0" cy="0" r="18" fill="none" stroke="#81c784" stroke-width="2"/>
+    <circle cx="0" cy="0" r="8" fill="#81c784" opacity="0.5"/>
+    <rect x="25" y="-25" width="15" height="10" rx="2" fill="#81c784" opacity="0.7"/>
+    <text x="0" y="55" text-anchor="middle" font-size="12" fill="#a5d6a7">Edge Capture</text>
+  </g>
+  
+  <!-- Center: Leaf with circuit -->
+  <g transform="translate(600, 180)">
+    <!-- Leaf shape -->
+    <path d="M 0,-60 Q 40,-40 50,0 Q 40,40 0,60 Q -40,40 -50,0 Q -40,-40 0,-60 Z" 
+          fill="none" stroke="#66bb6a" stroke-width="2.5"/>
+    <!-- Circuit lines -->
+    <line x1="-30" y1="-20" x2="30" y2="-20" stroke="#4caf50" stroke-width="1" opacity="0.6"/>
+    <line x1="-25" y1="0" x2="25" y2="0" stroke="#4caf50" stroke-width="1" opacity="0.6"/>
+    <line x1="-20" y1="20" x2="20" y2="20" stroke="#4caf50" stroke-width="1" opacity="0.6"/>
+    <circle cx="-15" cy="-20" r="3" fill="#4caf50"/>
+    <circle cx="10" cy="0" r="3" fill="#4caf50"/>
+    <circle cx="-5" cy="20" r="3" fill="#4caf50"/>
+    <line x1="0" y1="-40" x2="0" y2="40" stroke="#4caf50" stroke-width="1" opacity="0.4"/>
+  </g>
+  
+  <!-- Right: Neural network -->
+  <g transform="translate(1000, 150)">
+    <!-- Nodes -->
+    <circle cx="-40" cy="-30" r="8" fill="#81c784" opacity="0.7"/>
+    <circle cx="-40" cy="0" r="8" fill="#81c784" opacity="0.7"/>
+    <circle cx="-40" cy="30" r="8" fill="#81c784" opacity="0.7"/>
+    <circle cx="0" cy="-15" r="8" fill="#81c784" opacity="0.7"/>
+    <circle cx="0" cy="15" r="8" fill="#81c784" opacity="0.7"/>
+    <circle cx="40" cy="0" r="8" fill="#81c784" opacity="0.7"/>
+    <!-- Connections -->
+    <line x1="-32" y1="-30" x2="-8" y2="-15" stroke="#66bb6a" stroke-width="1"/>
+    <line x1="-32" y1="0" x2="-8" y2="-15" stroke="#66bb6a" stroke-width="1"/>
+    <line x1="-32" y1="0" x2="-8" y2="15" stroke="#66bb6a" stroke-width="1"/>
+    <line x1="-32" y1="30" x2="-8" y2="15" stroke="#66bb6a" stroke-width="1"/>
+    <line x1="8" y1="-15" x2="32" y2="0" stroke="#66bb6a" stroke-width="1"/>
+    <line x1="8" y1="15" x2="32" y2="0" stroke="#66bb6a" stroke-width="1"/>
+    <text x="0" y="55" text-anchor="middle" font-size="12" fill="#a5d6a7">AI Diagnosis</text>
+  </g>
+  
+  <!-- Connection lines -->
+  <line x1="220" y1="180" x2="540" y2="180" stroke="#4caf50" stroke-width="1.5" stroke-dasharray="8,4" opacity="0.5"/>
+  <line x1="660" y1="180" x2="930" y2="180" stroke="#4caf50" stroke-width="1.5" stroke-dasharray="8,4" opacity="0.5"/>
+  
+  <!-- Title text -->
+  <text x="600" y="320" text-anchor="middle" font-size="48" font-weight="bold" fill="#e8f5e9" letter-spacing="4">AgriVision</text>
+  <text x="600" y="360" text-anchor="middle" font-size="16" fill="#a5d6a7" letter-spacing="2">Smart Agriculture Pest &amp; Disease Monitoring Platform</text>
+</svg>

@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+.venv_yolo/
+.venv_fixed/
+
+# Model weights (too large for GitHub)
+system_a/models/*.onnx
+system_a/models/*.pth
+system_a/models/*.pt
+system_a/models/hf_cache/
+system_b/models/*.pt
+system_b/models/*.onnx
+
+# Database
+*.db
+
+# Detection logs
+detection_logs/
+system_b/core/detection_logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Environment
+.env
+.env.local

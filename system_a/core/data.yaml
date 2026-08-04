@@ -1,0 +1,25 @@
+# ============================
+# YOLO 目标检测数据集配置
+# ============================
+# 用于训练 YOLOv8 病虫害检测模型（disease / pest 两类）
+# 训练命令: yolo detect train model=yolov8n.pt data=data.yaml epochs=100
+#
+# 目录结构（相对于 path）:
+#   dataset_for_Yolo/
+#   ├── images/train/   训练图片
+#   ├── images/val/     验证图片
+#   ├── labels/train/   YOLO 格式标注 (.txt)
+#   └── labels/val/     YOLO 格式标注 (.txt)
+
+# 数据集根目录（相对于这个 yaml 文件的路径，部署时修改为实际路径）
+path: ./dataset_for_Yolo
+
+# 训练集和验证集的图片相对路径（相对于 path）
+train: images/train
+val: images/val
+
+# 类别数量（改成你实际标注的类别数）
+nc: 2
+
+# 类别名称（顺序必须和标注时输入的名字一致）
+names: ['disease', 'pest']

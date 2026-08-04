@@ -1,0 +1,15 @@
+# AgriVision System B dependencies
+# pip install -r requirements-b.txt
+
+# Web framework
+flask
+
+# Image processing & detection
+opencv-python
+numpy
+
+# HTTP requests (System A integration, DingTalk webhook)
+requests
+
+# Object detection (YOLOv8)
+ultralytics

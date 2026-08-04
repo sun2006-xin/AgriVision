@@ -1,0 +1,28 @@
+# AgriVision System A dependencies
+# pip install -r requirements-a.txt
+
+# Web framework
+fastapi
+uvicorn
+python-multipart
+pydantic
+
+# ONNX inference
+onnxruntime
+onnxruntime-gpu
+
+# Deep learning (ResNet-18 training & export)
+torch
+torchvision
+
+# Object detection & segmentation
+ultralytics
+
+# Chinese-CLIP & Qwen2-VL
+transformers
+qwen-vl-utils
+
+# Image processing
+opencv-python
+Pillow
+numpy
