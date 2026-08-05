@@ -69,14 +69,12 @@ detect_model = YOLO(YOLO_PATH)
 # YOLOv8-seg 实例分割模型（预训练，COCO 80类）
 seg_model = YOLO(str(MODELS_DIR / "yolov8n-seg.pt"))
 
-# Chinese-CLIP 零样本分类模型（本地缓存，无需联网）
+# Chinese-CLIP 零样本分类模型（首次运行自动从 HuggingFace 下载到本地缓存）
 clip_model = ChineseCLIPModel.from_pretrained(
     "OFA-Sys/chinese-clip-vit-base-patch16", cache_dir=str(MODELS_DIR / "hf_cache"),
-    local_files_only=True,
 )
 clip_processor = ChineseCLIPProcessor.from_pretrained(
     "OFA-Sys/chinese-clip-vit-base-patch16", cache_dir=str(MODELS_DIR / "hf_cache"),
-    local_files_only=True,
 )
 clip_model.eval()
 
@@ -134,11 +132,10 @@ def get_llm():
     if _llm_model is None:
         model_path = "Qwen/Qwen2-VL-2B-Instruct"
         _llm_processor = AutoProcessor.from_pretrained(
-            model_path, cache_dir=str(MODELS_DIR / "hf_cache"), local_files_only=True,
+            model_path, cache_dir=str(MODELS_DIR / "hf_cache"),
         )
         _llm_model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_path, cache_dir=str(MODELS_DIR / "hf_cache"),
-            local_files_only=True,
             torch_dtype=torch.float32,  # CPU 环境用 float32
             device_map="auto" if torch.cuda.is_available() else None,
         )

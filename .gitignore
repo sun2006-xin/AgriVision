@@ -11,13 +11,14 @@ build/
 .venv_yolo/
 .venv_fixed/
 
-# Model weights (too large for GitHub)
-system_a/models/*.onnx
-system_a/models/*.pth
-system_a/models/*.pt
+# Model weights — 大模型缓存不上传（HuggingFace 首次运行自动下载）
 system_a/models/hf_cache/
-system_b/models/*.pt
-system_b/models/*.onnx
+# 以下小模型已上传到仓库，clone 即可运行
+# system_a/models/*.onnx
+# system_a/models/*.pth
+# system_a/models/*.pt
+# system_b/models/*.pt
+# system_b/models/*.onnx
 
 # Database
 *.db
