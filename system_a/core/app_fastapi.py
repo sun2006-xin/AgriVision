@@ -250,7 +250,10 @@ app = FastAPI(title="大棚病虫害诊断 API", version="2.1")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=os.environ.get(
+        "CORS_ORIGINS",
+        "http://127.0.0.1:8000,http://localhost:8000,http://127.0.0.1:5000,http://localhost:5000",
+    ).split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )

@@ -7,6 +7,7 @@
 """
 
 import json
+import math
 import os
 from detection_enhanced import DetectionConfig, DEFAULT_CONFIG
 
@@ -209,8 +210,12 @@ class ConfigManager:
                  errors 为错误信息列表（为空时表示无错误）
         """
         errors = []
+        if not isinstance(params, dict):
+            return False, ["参数必须是 JSON 对象"]
+
         # 以 DEFAULT_CONFIG 作为"参数白名单"和类型参照标准
         defaults = DEFAULT_CONFIG.to_dict()
+        param_info = self.get_param_info()
         
         for key, value in params.items():
             if key not in defaults:
@@ -229,6 +234,15 @@ class ConfigManager:
             elif isinstance(default_value, float):
                 if not isinstance(value, (int, float)):
                     errors.append(f"参数 {key} 必须为数字，当前值: {value}")
+
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if not math.isfinite(float(value)):
+                    errors.append(f"参数 {key} 必须是有限数值，当前值: {value}")
+                bounds = param_info.get(key)
+                if bounds and not bounds["min"] <= value <= bounds["max"]:
+                    errors.append(
+                        f"参数 {key} 超出范围 [{bounds['min']}, {bounds['max']}]，当前值: {value}"
+                    )
         
         return len(errors) == 0, errors
     

@@ -683,6 +683,8 @@ ESP32-CAM 固件提供以下 HTTP 端点供 System B 调用：
 
 流程: 获取当前帧 → JPEG 编码 → POST 到 System A `/report` → 返回诊断报告 (超时 180 秒)
 
+代理请求使用 multipart 字段 `file`，与 System A `/report` 的 `UploadFile` 参数保持一致。System A 默认 CORS 仅允许本机 A/B 地址；跨主机部署时应设置 `CORS_ORIGINS` 环境变量。
+
 ### 9.12 视频流接口
 
 | 路径 | 方法 | 说明 |

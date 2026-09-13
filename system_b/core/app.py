@@ -2087,9 +2087,12 @@ def api_params():
     else:
         # 保存用户修改后的参数
         try:
-            params = request.get_json()
+            params = request.get_json(silent=True)
+            is_valid, errors = config_manager.validate_params(params)
+            if not is_valid:
+                return jsonify({"success": False, "errors": errors}), 400
             with config_lock:
-                config_manager.save_config(params)
+                config_manager.update_params(params)
             return jsonify({"success": True, "message": "参数已保存"})
         except Exception as e:
             return jsonify({"success": False, "message": str(e)}), 500
@@ -2382,7 +2385,7 @@ def api_deep_diagnose():
 
         resp = requests.post(
             report_url,
-            files={"image": ("frame.jpg", image_bytes, "image/jpeg")},
+            files={"file": ("frame.jpg", image_bytes, "image/jpeg")},
             timeout=180  # LLM 推理较慢，给足超时
         )
 

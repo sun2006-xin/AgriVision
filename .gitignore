@@ -41,3 +41,11 @@ desktop.ini
 # Environment
 .env
 .env.local
+.env.*.local
+*.pem
+*.key
+
+# Runtime data and local caches
+system_b/core/dataset/
+system_b/core/config/*.local.json
+.codex-health/

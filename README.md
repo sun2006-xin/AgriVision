@@ -45,7 +45,7 @@ AgriVision 是一个面向智慧农业场景的病虫害监测与诊断平台，
 | 引擎 | 模型 | 功能 | 输入 |
 |------|------|------|------|
 | 1. ResNet-18 | best_model.onnx (ONNX Runtime) | 12 类病害分类 | 单张叶片图 |
-| 2. YOLOv8n | yolov8n_pest.pt | 病害+虫害 2 类目标检测 | 单张图 |
+| 2. YOLOv8n | best.pt | 病害+虫害 2 类目标检测 | 单张图 |
 | 3. YOLOv8n-seg | yolov8n-seg.pt (COCO预训练) | 通用实例分割 | 单张图 |
 | 4. Chinese-CLIP | OFA-Sys/chinese-clip-vit-base-patch16 | 零样本 12 类分类 | 图文匹配 |
 | 5. Qwen2-VL-2B | Qwen/Qwen2-VL-2B-Instruct | 多模态 LLM 生成诊断报告 | 图片+提示词 |
@@ -74,7 +74,7 @@ System B 的 Web 监控面板提供"深度诊断"按钮，点击后将当前帧�
 
 ### 环境要求
 
-- Python 3.9+
+- Python 3.10+（推荐 3.11）
 - CUDA 11.8+（GPU 推理可选，CPU 也可运行）
 - ESP32-CAM 开发板（可选，用于边缘采集）
 
@@ -105,7 +105,7 @@ system_a/models/
 └── hf_cache/                # Chinese-CLIP & Qwen2-VL (首次运行自动下载)
 
 system_b/models/
-├── yolov8n_pest.pt          # YOLOv8n 病害/虫害检测模型
+├── best.pt                  # System B YOLOv8 病害/虫害检测模型
 └── yolov8n-seg.pt           # YOLOv8n-seg 分割模型 (COCO预训练)
 ```
 
@@ -181,7 +181,7 @@ AgriVision/
 ├── start_b.bat                  # 仅启动 B
 ├── requirements-a.txt           # System A 依赖
 ├── requirements-b.txt           # System B 依赖
-├── LICENSE                      # MIT 开源协议
+├── LICENSE                      # Apache License 2.0
 └── .gitignore
 ```
 
@@ -205,6 +205,13 @@ AgriVision/
 | [总体技术文档](docs/tech-doc.md) | 架构概览、快速启动、服务器部署指引 |
 | [System A 指南](docs/system-a-guide.md) | 五引擎详解、API 文档、模型训练、Nginx 部署 |
 | [System B 指南](docs/system-b-guide.md) | 双引擎架构、多摄像头配置、告警系统、ESP32 固件 |
+| [技术路线图](docs/roadmap.md) | 阶段目标、验收标准与后续迭代方向 |
+
+## 当前版本说明
+
+阶段 1 已完成基础可用性收敛：修复 System B 调用 System A `/report` 时的上传字段契约，参数 API 增加后端白名单、有限数值和范围校验，并补充最小回归测试。模型权重默认保留在本地，不随 Git 仓库分发；首次使用前请按文档准备模型文件。
+
+System A 默认只允许本机 A/B 前端来源访问。如需部署到其他域名，请显式设置 `CORS_ORIGINS`，使用逗号分隔的来源列表，不建议使用 `*`。
 
 ## 服务器部署
 
