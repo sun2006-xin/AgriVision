@@ -135,7 +135,7 @@ from health import build_service_health, summarize_camera
 from observability import resolve_request_id
 from event_schema import build_detection_event
 from offline_cache import OfflineEventCache
-from event_transport import EventTransport
+from event_transport import EventTransport, build_batch_idempotency_key
 
 # 创建 Flask 应用实例
 app = Flask(__name__)
@@ -184,12 +184,14 @@ def send_events_http(url, events):
     response = requests.post(
         url,
         json={"schema_version": 1, "events": events},
+        headers={"Idempotency-Key": build_batch_idempotency_key(events)},
         timeout=10,
     )
     return response.status_code
 
 
 event_transport = None
+offline_event_sync_lock = threading.Lock()
 if EVENTS_SINK_URL:
     try:
         event_transport = EventTransport(EVENTS_SINK_URL, send_events_http)
@@ -2405,20 +2407,27 @@ def api_offline_events_sync():
     """Manually sync a bounded batch; remove events only after 2xx delivery."""
     if event_transport is None:
         return jsonify({"success": False, "error": "event sink is not configured"}), 503
+    if not offline_event_sync_lock.acquire(blocking=False):
+        return jsonify({"success": False, "error": "event sync is already running"}), 409
 
-    params = request.get_json(silent=True) or {}
-    limit = params.get("limit", 50)
-    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
-        return jsonify({"success": False, "error": "limit must be an integer from 1 to 100"}), 400
+    try:
+        params = request.get_json(silent=True) or {}
+        if not isinstance(params, dict):
+            return jsonify({"success": False, "error": "request body must be a JSON object"}), 400
+        limit = params.get("limit", 50)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            return jsonify({"success": False, "error": "limit must be an integer from 1 to 100"}), 400
 
-    events = offline_event_cache.list_pending()[:limit]
-    result = event_transport.sync(events, offline_event_cache.ack)
-    pending = len(offline_event_cache.list_pending())
-    return jsonify({
-        "success": result["sent"] == len(events),
-        "pending": pending,
-        **result,
-    })
+        events = offline_event_cache.list_pending()[:limit]
+        result = event_transport.sync(events, offline_event_cache.ack)
+        pending = len(offline_event_cache.list_pending())
+        return jsonify({
+            "success": result["sent"] == len(events),
+            "pending": pending,
+            **result,
+        })
+    finally:
+        offline_event_sync_lock.release()
 
 
 # ---------- 8. MJPEG 视频流接口 ----------

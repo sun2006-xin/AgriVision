@@ -64,6 +64,9 @@ class Stage4EdgeTests(unittest.TestCase):
         self.assertIn("@app.route('/api/offline_events/ack', methods=['POST'])", source)
         self.assertIn("@app.route('/api/offline_events/sync', methods=['POST'])", source)
         self.assertIn("AGRIVISION_EVENTS_SINK_URL", source)
+        self.assertIn("Idempotency-Key", source)
+        self.assertIn("offline_event_sync_lock", source)
+        self.assertIn("if not isinstance(params, dict):", source)
 
     def test_sink_url_rejects_unsafe_or_ambiguous_destinations(self):
         from event_transport import validate_sink_url
@@ -90,6 +93,16 @@ class Stage4EdgeTests(unittest.TestCase):
         result = transport.sync([{"event_id": "event-1"}], acknowledged.append)
         self.assertEqual(result, {"sent": 1, "attempts": 3})
         self.assertEqual(acknowledged, ["event-1"])
+
+    def test_batch_idempotency_key_is_stable_and_order_sensitive(self):
+        from event_transport import build_batch_idempotency_key
+
+        first = [{"event_id": "event-1"}, {"event_id": "event-2"}]
+        second = [{"event_id": "event-1"}, {"event_id": "event-2"}]
+        reordered = [{"event_id": "event-2"}, {"event_id": "event-1"}]
+        self.assertEqual(build_batch_idempotency_key(first), build_batch_idempotency_key(second))
+        self.assertNotEqual(build_batch_idempotency_key(first), build_batch_idempotency_key(reordered))
+        self.assertEqual(len(build_batch_idempotency_key(first)), 64)
 
 
 if __name__ == "__main__":

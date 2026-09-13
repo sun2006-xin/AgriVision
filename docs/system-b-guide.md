@@ -669,9 +669,9 @@ System B 会把检测摘要写入本地有界队列 `offline_events/`，用于�
 | `/api/offline_events/ack` | POST | 外部传输成功后按 `event_id` 确认删除 |
 | `/api/offline_events/sync` | POST | 手动发送有界批次；仅在传输返回 2xx 后确认删除 |
 
-如需显式启用 HTTP 同步，请设置环境变量 `AGRIVISION_EVENTS_SINK_URL`。远端地址必须使用 HTTPS；仅允许 `localhost`、`127.0.0.1` 或 `::1` 使用 HTTP。服务默认不自动外发，避免部署时因误配置产生数据流出。
+如需显式启用 HTTP 同步，请设置环境变量 `AGRIVISION_EVENTS_SINK_URL`。远端地址必须使用 HTTPS；仅允许 `localhost`、`127.0.0.1` 或 `::1` 使用 HTTP。服务默认不自动外发，避免部署时因误配置产生数据流出。每次请求携带由有序事件批次生成的 `Idempotency-Key`，接收端应按该键或事件 `event_id` 去重。
 
-当前版本提供本地队列、确认接口和受限的手动 HTTP 同步；MQTT、自动调度和断网恢复联调仍未内置。
+当前版本提供本地队列、确认接口和受限的手动 HTTP 同步；MQTT、自动调度和断网恢复联调仍未内置。同步接口在同一 System B 进程内串行执行，并发请求返回 409。
 
 ### 9.10 告警接口
 

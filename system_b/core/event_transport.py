@@ -1,5 +1,7 @@
 """Bounded, opt-in transport for privacy-safe offline detection events."""
 
+import hashlib
+import json
 from time import sleep
 from urllib.parse import urlparse
 
@@ -20,6 +22,17 @@ def validate_sink_url(url):
     except ValueError as error:
         raise ValueError("event sink URL has an invalid port") from error
     return url.strip()
+
+
+def build_batch_idempotency_key(events):
+    """Build a stable, non-sensitive key for one ordered event batch."""
+    serialized = json.dumps(
+        list(events),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(serialized).hexdigest()
 
 
 class EventTransport:

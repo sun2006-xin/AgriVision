@@ -212,6 +212,7 @@ ESP32-CAM -> fetch_image() -> run_detection_once()
 | GET | /api/save_status | 拍照状态 |
 | GET | /api/sync_now | 手动SD同步 |
 | GET | /api/sync_status | 同步状态 |
+| POST | /api/offline_events/sync | 手动发送有界离线事件批次；2xx 后确认删除 |
 
 ### 3.6 启动方式
 
