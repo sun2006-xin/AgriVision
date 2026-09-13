@@ -201,6 +201,16 @@ def _read_nonnegative_float(name, default):
     return value if value >= 0 else default
 
 
+def _read_bounded_float(name, default, lower, upper):
+    raw_value = os.environ.get(name, str(default)).strip()
+    try:
+        value = float(raw_value)
+    except ValueError:
+        logger.warning("invalid numeric environment variable name=%s", name)
+        return default
+    return value if lower <= value <= upper else default
+
+
 def _read_bounded_int(name, default, lower, upper):
     raw_value = os.environ.get(name, str(default)).strip()
     try:
@@ -213,6 +223,7 @@ def _read_bounded_int(name, default, lower, upper):
 
 EVENTS_SYNC_INTERVAL = _read_nonnegative_float("AGRIVISION_EVENTS_SYNC_INTERVAL", 0)
 EVENTS_SYNC_LIMIT = _read_bounded_int("AGRIVISION_EVENTS_SYNC_LIMIT", 50, 1, 100)
+MQTT_CONNACK_TIMEOUT = _read_bounded_float("AGRIVISION_MQTT_CONNACK_TIMEOUT", 5.0, 0.1, 30.0)
 
 
 event_transport = None
@@ -242,6 +253,7 @@ def get_mqtt_transport():
         username=MQTT_USERNAME,
         password=MQTT_PASSWORD,
         ca_certs=MQTT_CA_CERTS,
+        connack_timeout=MQTT_CONNACK_TIMEOUT,
     )
     return mqtt_transport
 

@@ -228,6 +228,8 @@ MQTT 连接运行时对所有真实 Paho 客户端统一等待 MQTT v5 CONNACK�
 
 初始连接重试若遇到失败 CONNACK，会先停止当前网络循环并丢弃旧 Paho client，再按原配置创建新的 client 重试；这样不会把旧 socketpair、回调或 `reconnect_on_failure` 临时状态带入下一轮。阶段 26 的生命周期回归位于 `tests/test_stage26_mqtt_retry_lifecycle.py`。
 
+CONNACK 等待由 `connack_timeout` 控制，默认 5 秒，允许范围为 0.1–30 秒；System B 使用 `AGRIVISION_MQTT_CONNACK_TIMEOUT` 注入该值，超出范围或非数值配置回退到安全默认值，底层 API 仍会拒绝非法值。阶段 27 的参数、环境变量和实际等待值回归位于 `tests/test_stage27_mqtt_connack_timeout.py`。
+
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
 ### 3.6 启动方式

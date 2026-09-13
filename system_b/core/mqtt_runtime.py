@@ -29,6 +29,7 @@ def create_paho_transport(
     backoff_seconds=0.5,
     connect_attempts=3,
     connect_backoff_seconds=0.5,
+    connack_timeout=5.0,
 ):
     """Create a connected Paho transport and a close callback.
 
@@ -45,6 +46,10 @@ def create_paho_transport(
         raise ValueError("connect_attempts must be between 1 and 5")
     if connect_backoff_seconds < 0:
         raise ValueError("connect_backoff_seconds must not be negative")
+    if isinstance(connack_timeout, bool) or not isinstance(connack_timeout, (int, float)):
+        raise ValueError("connack_timeout must be a number")
+    if not 0.1 <= connack_timeout <= 30:
+        raise ValueError("connack_timeout must be between 0.1 and 30 seconds")
 
     try:
         import paho.mqtt.client as mqtt
@@ -102,7 +107,7 @@ def create_paho_transport(
                 client.reconnect_on_failure = False
                 client.loop_start()
                 loop_started = True
-                if not connection_event.wait(0.5) or connection_failure:
+                if not connection_event.wait(connack_timeout) or connection_failure:
                     raise RuntimeError("MQTT broker rejected connection")
                 client.reconnect_on_failure = reconnect_on_failure
             break
