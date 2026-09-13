@@ -33,13 +33,21 @@ class Stage21ProcessSyncLockTests(unittest.TestCase):
             results = context.Queue()
             continue_event = context.Event()
             child = context.Process(target=_probe_lock_in_child, args=(path, results, continue_event))
-            child.start()
-            self.assertFalse(results.get(timeout=5))
-            holder.release()
-            continue_event.set()
-            self.assertTrue(results.get(timeout=5))
-            child.join(timeout=5)
-            self.assertEqual(child.exitcode, 0)
+            try:
+                child.start()
+                self.assertFalse(results.get(timeout=5))
+                holder.release()
+                continue_event.set()
+                self.assertTrue(results.get(timeout=5))
+                child.join(timeout=5)
+                self.assertEqual(child.exitcode, 0)
+            finally:
+                continue_event.set()
+                if child.pid is not None:
+                    if child.is_alive():
+                        child.terminate()
+                    child.join(timeout=5)
+                holder.release()
 
     def test_second_lock_holder_is_rejected_until_first_releases(self):
         with tempfile.TemporaryDirectory() as directory:
