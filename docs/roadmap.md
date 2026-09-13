@@ -129,6 +129,13 @@ AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实�
 - 已验证 broker 最终只收到一条有效事件；测试不使用公网 broker、不包含凭据。
 - 真实公网 broker 的 TLS/认证、ACL、长时间网络抖动和 ESP32 无线恢复仍未验收。
 
+## 阶段 19：离线事件自动调度（本机已完成）
+
+- 新增默认关闭的 `EventSyncScheduler`；设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数后，System B 才会周期性消费有界离线事件队列。
+- 自动同步优先使用已配置的 MQTT，未配置 MQTT 时回退到 HTTP sink；每轮复用现有进程锁和 `AGRIVISION_EVENTS_SYNC_LIMIT` 上限，异常不会终止后台线程。
+- 退出时会停止调度线程并关闭 MQTT；未配置传输器、间隔为 0 或非法配置时保持不外发。
+- 真实公网 TLS/认证、跨进程部署、多实例协调和 ESP32 长时间断网恢复仍未验收。
+
 ## 发布规则
 
 每个阶段单独建立分支、完成测试和隐私扫描后提交并推送；模型缓存、数据库、摄像头地址、Webhook 和本地日志不得进入公开提交。

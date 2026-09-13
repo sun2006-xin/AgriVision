@@ -138,6 +138,7 @@ from event_schema import build_detection_event
 from offline_cache import OfflineEventCache
 from event_transport import EventTransport, send_events_http
 from mqtt_runtime import create_paho_transport
+from event_scheduler import EventSyncScheduler
 
 # 创建 Flask 应用实例
 app = Flask(__name__)
@@ -187,6 +188,30 @@ MQTT_PASSWORD = os.environ.get("AGRIVISION_MQTT_PASSWORD")
 MQTT_CA_CERTS = os.environ.get("AGRIVISION_MQTT_CA_CERTS")
 
 
+def _read_nonnegative_float(name, default):
+    raw_value = os.environ.get(name, str(default)).strip()
+    try:
+        value = float(raw_value)
+    except ValueError:
+        logger.warning("invalid numeric environment variable name=%s", name)
+        return default
+    return value if value >= 0 else default
+
+
+def _read_bounded_int(name, default, lower, upper):
+    raw_value = os.environ.get(name, str(default)).strip()
+    try:
+        value = int(raw_value)
+    except ValueError:
+        logger.warning("invalid integer environment variable name=%s", name)
+        return default
+    return value if lower <= value <= upper else default
+
+
+EVENTS_SYNC_INTERVAL = _read_nonnegative_float("AGRIVISION_EVENTS_SYNC_INTERVAL", 0)
+EVENTS_SYNC_LIMIT = _read_bounded_int("AGRIVISION_EVENTS_SYNC_LIMIT", 50, 1, 100)
+
+
 event_transport = None
 offline_event_sync_lock = threading.Lock()
 if EVENTS_SINK_URL:
@@ -197,6 +222,7 @@ if EVENTS_SINK_URL:
 
 mqtt_transport = None
 mqtt_close = None
+event_sync_scheduler = None
 
 
 def get_mqtt_transport():
@@ -221,6 +247,45 @@ def get_mqtt_transport():
 def close_mqtt_runtime():
     if mqtt_close is not None:
         mqtt_close()
+
+
+def sync_offline_events_once():
+    """Sync one bounded batch for the opt-in background scheduler."""
+    if not offline_event_sync_lock.acquire(blocking=False):
+        return {"sent": 0, "skipped": "sync already running"}
+    try:
+        events = offline_event_cache.list_pending()[:EVENTS_SYNC_LIMIT]
+        if not events:
+            return {"sent": 0, "acked": 0, "pending": 0}
+        transport = get_mqtt_transport() if MQTT_BROKER_URL else event_transport
+        if transport is None:
+            return {"sent": 0, "acked": 0, "pending": len(events)}
+        result = transport.sync(events, offline_event_cache.ack)
+        return {**result, "pending": len(offline_event_cache.list_pending())}
+    except Exception:
+        logger.exception("automatic offline event sync failed")
+        return {"sent": 0, "acked": 0, "error": "sync failed"}
+    finally:
+        offline_event_sync_lock.release()
+
+
+def start_event_sync_scheduler():
+    """Start automatic event sync only when an explicit interval is configured."""
+    global event_sync_scheduler
+    if EVENTS_SYNC_INTERVAL <= 0 or (not MQTT_BROKER_URL and event_transport is None):
+        return False
+    event_sync_scheduler = EventSyncScheduler(
+        sync_offline_events_once,
+        EVENTS_SYNC_INTERVAL,
+        logger=logger,
+    )
+    return event_sync_scheduler.start()
+
+
+@atexit.register
+def stop_event_sync_scheduler():
+    if event_sync_scheduler is not None:
+        event_sync_scheduler.stop(timeout=5)
 
 # 异常图片保存间隔（秒）：当检测到"注意"及以上等级时，每隔此时间保存一张标注图到 detection_logs/
 SAVE_INTERVAL = 60
@@ -2977,6 +3042,9 @@ if __name__ == '__main__':
         # 第三步: 启动 SD 卡同步后台守护线程
         sd_thread = threading.Thread(target=sd_sync_loop, args=(cid,), daemon=True)
         sd_thread.start()
+
+    if start_event_sync_scheduler():
+        print(f"  离线事件自动同步已启用: 每 {EVENTS_SYNC_INTERVAL:g} 秒")
 
     # 第四步: 打印启动信息
     print("=" * 50)

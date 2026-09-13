@@ -671,7 +671,7 @@ System B 会把检测摘要写入本地有界队列 `offline_events/`，用于�
 
 如需显式启用 HTTP 同步，请设置环境变量 `AGRIVISION_EVENTS_SINK_URL`。远端地址必须使用 HTTPS；仅允许 `localhost`、`127.0.0.1` 或 `::1` 使用 HTTP。服务默认不自动外发，避免部署时因误配置产生数据流出。每次请求携带由有序事件批次生成的 `Idempotency-Key`，接收端应按该键或事件 `event_id` 去重。
 
-当前版本提供本地队列、确认接口和受限的手动 HTTP 同步；MQTT、自动调度和断网恢复联调仍未内置。同步接口在同一 System B 进程内串行执行，并发请求返回 409。
+当前版本提供本地队列、确认接口、受限的手动同步和默认关闭的自动调度；同步接口与后台调度在同一 System B 进程内串行执行，并发请求返回 409。自动调度不等同于真实公网或 ESP32 断网恢复联调。
 
 ### 9.9.2 本地端到端验收
 
@@ -687,13 +687,17 @@ System B 会把检测摘要写入本地有界队列 `offline_events/`，用于�
 
 `tests/test_stage10_local_mqtt_broker.py` 使用标准库临时 broker 做协议级验收，配合 `requirements-mqtt.txt` 中的 Paho 2.1.0 可验证本机 CONNECT、QoS 1、PUBACK 和关闭流程。它只监听 `127.0.0.1` 随机端口；公网 TLS、认证、ACL、重连和 ESP32 链路仍需单独验收。
 
-MQTT broker 地址应通过 `mqtt_config.validate_broker_url` 校验：远端使用 `mqtts://host:8883`，本机开发可使用 `mqtt://127.0.0.1:1883`。不要把账号、密码或路径写入 URL；当前版本尚未自动建立 broker 连接。
+MQTT broker 地址应通过 `mqtt_config.validate_broker_url` 校验：远端使用 `mqtts://host:8883`，本机开发可使用 `mqtt://127.0.0.1:1883`。不要把账号、密码或路径写入 URL；自动调度启用后才会在首次发送时建立 broker 连接。
 
 如需接入 Paho，可安装 `requirements-mqtt.txt`，调用 `mqtt_runtime.create_paho_transport(...)` 获取传输器和 `close` 回调。broker URL、topic、client ID 和凭据应从部署环境注入；函数不会在模块导入时连接。关闭服务前应调用 `close`，以停止 Paho 网络循环。当前仓库只用假客户端测试该生命周期，未提供真实 broker 凭据。
 
 System B 的 `/api/offline_events/sync_mqtt` 是手动入口，不会在启动时自动连接。配置 `AGRIVISION_MQTT_BROKER_URL`、`AGRIVISION_MQTT_TOPIC` 和 `AGRIVISION_MQTT_CLIENT_ID` 后，再按需通过请求体 `{"limit": 50}` 触发；用户名/密码使用独立环境变量注入，不能写入 URL。初始连接最多重试 5 次，未配置或最终连接失败时返回 503，响应不包含 broker 地址或凭据。
 
 连接建立后由 Paho 网络循环负责运行中重连；本地测试已模拟 broker 主动断开并验证恢复。生产部署仍需在真实网络条件下验证 TLS、认证、ACL、长时间抖动和设备恢复。
+
+### 9.9.4 自动同步配置
+
+自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后，服务启动时会创建可停止的后台调度线程；设置为 `0` 或不设置则不自动外发。每轮最多同步 `AGRIVISION_EVENTS_SYNC_LIMIT` 条事件（默认 50，范围 1–100），优先使用完整 MQTT 配置，否则使用 `AGRIVISION_EVENTS_SINK_URL` 的 HTTP sink。同步失败不会删除本地事件，后台异常也不会终止调度线程。
 
 ### 9.10 告警接口
 
