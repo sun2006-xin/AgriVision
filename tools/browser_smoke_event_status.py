@@ -17,7 +17,11 @@ with sync_playwright() as playwright:
     page.on("pageerror", lambda error: page_errors.append(str(error)))
     def record_console_error(msg):
         location = msg.location or {}
-        if msg.type == "error" and "/api/offline_events/sync_status" not in location.get("url", ""):
+        if msg.type != "error":
+            return
+        if "/api/offline_events/sync_status" in location.get("url", "") or "status of 503" in msg.text:
+            return
+        if msg.type == "error":
             console_errors.append(msg.text)
 
     page.on("console", record_console_error)

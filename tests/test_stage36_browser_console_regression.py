@@ -12,6 +12,7 @@ class Stage36BrowserConsoleRegressionTests(unittest.TestCase):
         self.assertIn("console_errors = []", source)
         self.assertIn("page.on(\"pageerror\"", source)
         self.assertIn("msg.type == \"error\"", source)
+        self.assertIn("status of 503", source)
         self.assertIn("assert not page_errors", source)
         self.assertIn("assert not console_errors", source)
 
