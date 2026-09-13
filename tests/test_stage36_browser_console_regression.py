@@ -13,6 +13,9 @@ class Stage36BrowserConsoleRegressionTests(unittest.TestCase):
         self.assertIn("page.on(\"pageerror\"", source)
         self.assertIn("msg.type == \"error\"", source)
         self.assertIn("status of 503", source)
+        self.assertIn("Failed to load resource:", source)
+        self.assertIn("**/api/dual_status**", source)
+        self.assertIn('"level":"正常"', source)
         self.assertIn("assert not page_errors", source)
         self.assertIn("assert not console_errors", source)
 

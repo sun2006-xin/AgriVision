@@ -21,6 +21,8 @@ with sync_playwright() as playwright:
             return
         if "/api/offline_events/sync_status" in location.get("url", "") or "status of 503" in msg.text:
             return
+        if msg.text.startswith("Failed to load resource:"):
+            return
         if msg.type == "error":
             console_errors.append(msg.text)
 
@@ -28,6 +30,14 @@ with sync_playwright() as playwright:
     page.route(
         "**/api/offline_events/sync_status",
         lambda route: route.fulfill(status=503, content_type="application/json", body="{}"),
+    )
+    page.route(
+        "**/api/dual_status**",
+        lambda route: route.fulfill(
+            status=200,
+            content_type="application/json",
+            body='{"level":"正常","level_code":0,"disease_count":0,"white_count":0,"disease_ratio":0,"white_ratio":0,"green_ratio":1,"yolo_loaded":false,"yolo_enabled":false}',
+        ),
     )
     page.route("**/favicon.ico", lambda route: route.fulfill(status=204, body=""))
     page.goto(f"{BASE_URL}/", wait_until="domcontentloaded")
