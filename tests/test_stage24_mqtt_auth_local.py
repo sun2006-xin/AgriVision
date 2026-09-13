@@ -101,7 +101,7 @@ class Stage24MqttAuthTests(unittest.TestCase):
                 "agrivision/events",
                 "agrivision-auth-reject-test",
                 username=AuthTlsMqttHandler.username.decode("ascii"),
-                password="wrong-synthetic-password",
+                password="bad",
                 ca_certs=self.certificate,
                 max_attempts=1,
                 backoff_seconds=0,
