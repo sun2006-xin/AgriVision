@@ -687,6 +687,8 @@ System B 会把检测摘要写入本地有界队列 `offline_events/`，用于�
 
 MQTT broker 地址应通过 `mqtt_config.validate_broker_url` 校验：远端使用 `mqtts://host:8883`，本机开发可使用 `mqtt://127.0.0.1:1883`。不要把账号、密码或路径写入 URL；当前版本尚未自动建立 broker 连接。
 
+如需接入 Paho，可安装 `requirements-mqtt.txt`，调用 `mqtt_runtime.create_paho_transport(...)` 获取传输器和 `close` 回调。broker URL、topic、client ID 和凭据应从部署环境注入；函数不会在模块导入时连接。关闭服务前应调用 `close`，以停止 Paho 网络循环。当前仓库只用假客户端测试该生命周期，未提供真实 broker 凭据。
+
 ### 9.10 告警接口
 
 | 路径 | 方法 | 说明 |

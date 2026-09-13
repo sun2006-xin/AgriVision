@@ -1,0 +1,2 @@
+# Optional runtime dependency for the MQTT adapter.
+paho-mqtt>=2.0,<3
