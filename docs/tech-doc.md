@@ -90,6 +90,8 @@ AgriVision/
 |------|------|------|
 | GET | / | 前端页面(frontend.html) |
 | GET | /health | 健康检查 |
+| GET | /health/live | 进程存活检查 |
+| GET | /health/ready | 模型就绪检查 |
 | POST | /predict | 分类(ONNX) |
 | POST | /detect | 检测(YOLO) |
 | POST | /segment | 分割(YOLO-seg) |

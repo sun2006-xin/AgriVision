@@ -13,6 +13,9 @@ AgriVision System A — 智能大棚病虫害诊断站（FastAPI 后端）
 """
 
 import os
+import logging
+import time
+import uuid
 os.environ["HF_HOME"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models", "hf_cache")
 
 import cv2
@@ -27,7 +30,7 @@ import torch.nn.functional as F
 from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from PIL import Image
 import io
@@ -247,6 +250,33 @@ class HistoryItem(BaseModel):
 
 # ======================== FastAPI 实例 ========================
 app = FastAPI(title="大棚病虫害诊断 API", version="2.1")
+logger = logging.getLogger("agrivision.system_a")
+
+
+@app.middleware("http")
+async def request_observation(request, call_next):
+    request_id = request.headers.get("X-Request-ID", "")
+    if not request_id or len(request_id) > 64 or not all(
+        char.isalnum() or char in "._:-" for char in request_id
+    ):
+        request_id = uuid.uuid4().hex
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception("request_failed event=request_failed path=%s request_id=%s", request.url.path, request_id)
+        raise
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    response.headers["X-Request-ID"] = request_id
+    logger.info(
+        "request_completed event=request_completed method=%s path=%s status=%s duration_ms=%.1f request_id=%s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_ms,
+        request_id,
+    )
+    return response
 
 app.add_middleware(
     CORSMiddleware,
@@ -651,5 +681,25 @@ async def export_history_csv():
 
 
 @app.get("/health")
+@app.get("/health/ready")
 async def health():
-    return {"status": "healthy", "backend": "ONNX Runtime + YOLOv8"}
+    """Readiness-compatible health response without triggering LLM loading."""
+    checks = {
+        "onnx": ort_session is not None,
+        "detector": detect_model is not None,
+        "segmenter": seg_model is not None,
+        "clip": clip_model is not None,
+    }
+    ready = all(checks.values())
+    payload = {
+        "status": "ready" if ready else "degraded",
+        "service": "system-a",
+        "checks": checks,
+        "llm_loaded": _llm_model is not None,
+    }
+    return JSONResponse(payload, status_code=200 if ready else 503)
+
+
+@app.get("/health/live")
+async def health_live():
+    return {"status": "alive", "service": "system-a"}

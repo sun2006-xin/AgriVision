@@ -11,6 +11,7 @@
 import os       # 操作系统相关：路径拼接、目录创建、文件列表等
 import sys      # 系统路径操作：用于将虚拟环境加入模块搜索路径
 import json     # JSON 解析：读取 cameras.json 多摄像头配置
+import logging  # 标准日志：记录请求耗时和关联 ID
 
 # ---------- 项目根目录与虚拟环境路径初始化 ----------
 # BASE_DIR: 当前脚本所在目录，即项目根目录
@@ -22,7 +23,7 @@ VENV_DIR = os.path.join(BASE_DIR, '.venv')
 sys.path.insert(0, VENV_DIR)
 
 # ---------- Web 框架与图像处理依赖 ----------
-from flask import Flask, Response, jsonify, request, send_file, send_from_directory  # Flask: Web 框架; Response: 自定义响应(视频流); jsonify: JSON 响应; request: 请求对象; send_file: 文件下载; send_from_directory: 目录文件发送
+from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory  # Flask: Web 框架; Response: 自定义响应(视频流); jsonify: JSON 响应; request: 请求对象; send_file: 文件下载; send_from_directory: 目录文件发送
 import cv2              # OpenCV: 图像编解码、绘制文字、形态学操作等
 import time             # 时间相关：计时、延时、时间戳格式化
 import threading        # 多线程支持：后台检测循环、SD 同步循环、线程锁
@@ -130,9 +131,34 @@ from config import ConfigManager        # 配置管理器：负责检测参数�
 from yolo_detector import YOLODetector, get_detector   # YOLO 检测器封装
 from dual_verifier import DualVerifier                  # 双引擎验证融合器
 from alert_notifier import get_notifier                 # 智能告警通知器
+from health import build_service_health, summarize_camera
+from observability import resolve_request_id
 
 # 创建 Flask 应用实例
 app = Flask(__name__)
+logger = logging.getLogger("agrivision.system_b")
+
+
+@app.before_request
+def start_request_observation():
+    g.request_id = resolve_request_id(request.headers.get("X-Request-ID"))
+    g.request_started = time.perf_counter()
+
+
+@app.after_request
+def finish_request_observation(response):
+    request_id = getattr(g, "request_id", "")
+    response.headers["X-Request-ID"] = request_id
+    elapsed_ms = (time.perf_counter() - getattr(g, "request_started", time.perf_counter())) * 1000
+    logger.info(
+        "request_completed event=request_completed method=%s path=%s status=%s duration_ms=%.1f request_id=%s",
+        request.method,
+        request.path,
+        response.status_code,
+        elapsed_ms,
+        request_id,
+    )
+    return response
 
 # ============================================================
 # 配置常量 - 系统运行时使用的全局常量与状态字典
@@ -1927,6 +1953,33 @@ function closeReport() {
 @app.route('/')
 def index():
     return HTML_PAGE
+
+
+@app.route('/health/live')
+def health_live():
+    """Liveness probe: the web process is accepting requests."""
+    return jsonify({"status": "alive", "service": "system-b"})
+
+
+@app.route('/health/ready')
+def health_ready():
+    """Readiness probe: report model and camera availability."""
+    camera_summaries = []
+    for camera_id, camera in cameras.items():
+        with camera["state"]["frame_lock"]:
+            camera_summaries.append(summarize_camera(camera_id, camera["state"]))
+
+    camera_ready = any(camera["has_frame"] for camera in camera_summaries if cameras[camera["id"]].get("enabled", True))
+    yolo_ready = (not yolo_enabled) or yolo_detector.is_loaded()
+    payload = build_service_health("system-b", {"camera": camera_ready, "yolo": yolo_ready})
+    payload["cameras"] = camera_summaries
+    return jsonify(payload), (200 if payload["status"] == "ready" else 503)
+
+
+@app.route('/health')
+def health():
+    """Compatibility health endpoint; use /health/ready for deployment probes."""
+    return health_ready()
 
 
 # ---------- 2. 摄像头接口 ----------

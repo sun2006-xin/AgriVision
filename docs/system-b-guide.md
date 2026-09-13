@@ -668,7 +668,14 @@ ESP32-CAM 固件提供以下 HTTP 端点供 System B 调用：
 | `/api/alert/history` | GET | 获取告警历史 |
 | `/api/alert/test` | POST | 发送测试告警 |
 
-### 9.11 A-B 浅连接接口
+### 9.11 健康检查接口
+
+| 路径 | 方法 | 说明 |
+|------|------|------|
+| `/health/live` | GET | 进程存活检查，服务能响应即返回 200 |
+| `/health/ready` | GET | 检查启用摄像头是否有帧、YOLO 是否就绪；降级时返回 503 |
+
+### 9.12 A-B 浅连接接口
 
 | 路径 | 方法 | 说明 |
 |------|------|------|
@@ -685,7 +692,7 @@ ESP32-CAM 固件提供以下 HTTP 端点供 System B 调用：
 
 代理请求使用 multipart 字段 `file`，与 System A `/report` 的 `UploadFile` 参数保持一致。System A 默认 CORS 仅允许本机 A/B 地址；跨主机部署时应设置 `CORS_ORIGINS` 环境变量。
 
-### 9.12 视频流接口
+### 9.13 视频流接口
 
 | 路径 | 方法 | 说明 |
 |------|------|------|

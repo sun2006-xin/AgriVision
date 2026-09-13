@@ -9,6 +9,7 @@
 import json
 import math
 import os
+import tempfile
 from detection_enhanced import DetectionConfig, DEFAULT_CONFIG
 
 # 配置文件存放目录，位于本模块所在目录下的 config/ 文件夹
@@ -115,12 +116,20 @@ class ConfigManager:
         :return: True 保存成功，False 保存失败
         """
         try:
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            fd, temp_path = tempfile.mkstemp(
+                prefix="detection_params.", suffix=".tmp", dir=CONFIG_DIR
+            )
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 json.dump(params, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, CONFIG_FILE)
             self.current_config = params
             return True
         except IOError as e:
             print(f"保存配置失败: {e}")
+            if 'temp_path' in locals() and os.path.exists(temp_path):
+                os.remove(temp_path)
             return False
     
     def get_current_config(self):
