@@ -1,0 +1,5 @@
+# Lightweight dependencies for tests and public-repository CI.
+flask
+numpy
+opencv-python-headless
+requests

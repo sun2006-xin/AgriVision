@@ -45,7 +45,7 @@ AgriVision 是一个面向智慧农业场景的病虫害监测与诊断平台，
 | 引擎 | 模型 | 功能 | 输入 |
 |------|------|------|------|
 | 1. ResNet-18 | best_model.onnx (ONNX Runtime) | 12 类病害分类 | 单张叶片图 |
-| 2. YOLOv8n | yolov8n_pest.pt | 病害+虫害 2 类目标检测 | 单张图 |
+| 2. YOLOv8n | best.pt | 病害+虫害 2 类目标检测 | 单张图 |
 | 3. YOLOv8n-seg | yolov8n-seg.pt (COCO预训练) | 通用实例分割 | 单张图 |
 | 4. Chinese-CLIP | OFA-Sys/chinese-clip-vit-base-patch16 | 零样本 12 类分类 | 图文匹配 |
 | 5. Qwen2-VL-2B | Qwen/Qwen2-VL-2B-Instruct | 多模态 LLM 生成诊断报告 | 图片+提示词 |
@@ -74,7 +74,7 @@ System B 的 Web 监控面板提供"深度诊断"按钮，点击后将当前帧�
 
 ### 环境要求
 
-- Python 3.9+
+- Python 3.10+（推荐 3.11）
 - CUDA 11.8+（GPU 推理可选，CPU 也可运行）
 - ESP32-CAM 开发板（可选，用于边缘采集）
 
@@ -105,7 +105,7 @@ system_a/models/
 └── hf_cache/                # Chinese-CLIP & Qwen2-VL (首次运行自动下载)
 
 system_b/models/
-├── yolov8n_pest.pt          # YOLOv8n 病害/虫害检测模型
+├── best.pt                  # System B YOLOv8 病害/虫害检测模型
 └── yolov8n-seg.pt           # YOLOv8n-seg 分割模型 (COCO预训练)
 ```
 
@@ -181,7 +181,7 @@ AgriVision/
 ├── start_b.bat                  # 仅启动 B
 ├── requirements-a.txt           # System A 依赖
 ├── requirements-b.txt           # System B 依赖
-├── LICENSE                      # MIT 开源协议
+├── LICENSE                      # Apache License 2.0
 └── .gitignore
 ```
 
@@ -205,6 +205,27 @@ AgriVision/
 | [总体技术文档](docs/tech-doc.md) | 架构概览、快速启动、服务器部署指引 |
 | [System A 指南](docs/system-a-guide.md) | 五引擎详解、API 文档、模型训练、Nginx 部署 |
 | [System B 指南](docs/system-b-guide.md) | 双引擎架构、多摄像头配置、告警系统、ESP32 固件 |
+| [技术路线图](docs/roadmap.md) | 阶段目标、验收标准与后续迭代方向 |
+
+## 当前版本说明
+
+阶段 1 已完成基础可用性收敛，阶段 2 已完成工程化基础，阶段 3 已完成评估基础，阶段 4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24 已完成边缘离线队列、可靠 HTTP 同步、本地端到端、本机 HTTP 回环、开源发布 CI 门禁、CI 云端证据、MQTT 传输契约、连接安全边界、可选 Paho 运行时、Paho 云端回归、本机 MQTT 协议验收、System B MQTT 手动同步接入、初始连接重试、运行中断线重连、默认关闭的自动同步、同步状态可观测性、同主机跨进程互斥、HTTP 错误分类重试、本机 TLS 证书验收和本机 TLS 认证验收基础：修复 A/B 接口契约，增加参数校验、健康探针、请求观测、原子配置写入、固定 JSON 预测集评估、低置信度标记、有界检测事件缓存、幂等键、并发防护、响应丢失重试验证、真实本机 HTTP/MQTT 请求验证、成功后确认的手动同步入口、跟踪文件隐私扫描、注入式 MQTT 发布契约、远端 TLS 约束、可关闭的 Paho 生命周期、显式 MQTT 手动同步路由、有界初始连接重试、运行中断线恢复验证、可控后台调度、脱敏状态接口、同主机多进程锁、4xx/5xx 分类处理、临时 CA 证书回归和 MQTT v5 认证失败处理。模型权重默认保留在本地，不随 Git 仓库分发；首次使用前请按文档准备模型文件。
+
+公开发布门禁已在 GitHub Actions 对提交 `1c68338` 验证通过：[查看 CI 运行记录](https://github.com/sun2006-xin/AgriVision/actions/runs/34762246684)。
+
+MQTT 契约测试也已在 GitHub Actions 对提交 `de89384` 验证通过：[查看 MQTT CI 运行记录](https://github.com/sun2006-xin/AgriVision/actions/runs/34762437681)。这不代表真实 broker 或 ESP32 已完成联调。
+
+可选 Paho 运行时也已在 GitHub Actions 对提交 `4f33688` 验证通过：[查看 Paho CI 运行记录](https://github.com/sun2006-xin/AgriVision/actions/runs/34762728744)。真实 broker、TLS 证书和设备链路仍需现场验收。
+
+System A 默认只允许本机 A/B 前端来源访问。如需部署到其他域名，请显式设置 `CORS_ORIGINS`，使用逗号分隔的来源列表，不建议使用 `*`。
+
+System B 的离线事件自动同步默认关闭；配置 `AGRIVISION_EVENTS_SYNC_INTERVAL`（秒，正数启用）后才会周期性发送，`AGRIVISION_EVENTS_SYNC_LIMIT` 可设置每批 1–100 条。自动同步优先使用 MQTT，否则使用 `AGRIVISION_EVENTS_SINK_URL` 指定的 HTTP sink；手动和自动同步通过同一主机的 SQLite 运行时锁避免多进程重复消费，可通过 `/api/offline_events/sync_status` 查看脱敏的运行状态、队列数量和成功/失败计数。真实生产 TLS、认证、跨主机协调和设备断网恢复仍需现场验收。
+
+HTTP sink 的 4xx 会被标记为永久失败并停止重试；5xx 或网络异常才进入有界重试。状态接口只显示固定失败类别，不显示响应正文或异常详情。
+
+本机 MQTT TLS 回归使用临时证书和回环 broker，不代表公网证书链、认证、ACL 或 ESP32 链路已完成验收。
+
+本机 MQTT 认证回归同时验证独立 username/password 注入和错误凭据拒绝；公网认证、ACL、证书轮换和 ESP32 链路仍需现场验收。
 
 ## 服务器部署
 

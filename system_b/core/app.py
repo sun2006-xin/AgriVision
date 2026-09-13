@@ -9,8 +9,10 @@
 """
 
 import os       # 操作系统相关：路径拼接、目录创建、文件列表等
+import atexit   # 进程退出时释放可选 MQTT 客户端
 import sys      # 系统路径操作：用于将虚拟环境加入模块搜索路径
 import json     # JSON 解析：读取 cameras.json 多摄像头配置
+import logging  # 标准日志：记录请求耗时和关联 ID
 
 # ---------- 项目根目录与虚拟环境路径初始化 ----------
 # BASE_DIR: 当前脚本所在目录，即项目根目录
@@ -22,7 +24,7 @@ VENV_DIR = os.path.join(BASE_DIR, '.venv')
 sys.path.insert(0, VENV_DIR)
 
 # ---------- Web 框架与图像处理依赖 ----------
-from flask import Flask, Response, jsonify, request, send_file, send_from_directory  # Flask: Web 框架; Response: 自定义响应(视频流); jsonify: JSON 响应; request: 请求对象; send_file: 文件下载; send_from_directory: 目录文件发送
+from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory  # Flask: Web 框架; Response: 自定义响应(视频流); jsonify: JSON 响应; request: 请求对象; send_file: 文件下载; send_from_directory: 目录文件发送
 import cv2              # OpenCV: 图像编解码、绘制文字、形态学操作等
 import time             # 时间相关：计时、延时、时间戳格式化
 import threading        # 多线程支持：后台检测循环、SD 同步循环、线程锁
@@ -130,9 +132,41 @@ from config import ConfigManager        # 配置管理器：负责检测参数�
 from yolo_detector import YOLODetector, get_detector   # YOLO 检测器封装
 from dual_verifier import DualVerifier                  # 双引擎验证融合器
 from alert_notifier import get_notifier                 # 智能告警通知器
+from health import build_service_health, summarize_camera
+from observability import resolve_request_id
+from event_schema import build_detection_event
+from offline_cache import OfflineEventCache
+from event_transport import EventTransport, send_events_http
+from mqtt_runtime import create_paho_transport
+from event_scheduler import EventSyncScheduler
+from event_sync_status import EventSyncStatus
+from process_sync_lock import ProcessSyncLock
 
 # 创建 Flask 应用实例
 app = Flask(__name__)
+logger = logging.getLogger("agrivision.system_b")
+
+
+@app.before_request
+def start_request_observation():
+    g.request_id = resolve_request_id(request.headers.get("X-Request-ID"))
+    g.request_started = time.perf_counter()
+
+
+@app.after_request
+def finish_request_observation(response):
+    request_id = getattr(g, "request_id", "")
+    response.headers["X-Request-ID"] = request_id
+    elapsed_ms = (time.perf_counter() - getattr(g, "request_started", time.perf_counter())) * 1000
+    logger.info(
+        "request_completed event=request_completed method=%s path=%s status=%s duration_ms=%.1f request_id=%s",
+        request.method,
+        request.path,
+        response.status_code,
+        elapsed_ms,
+        request_id,
+    )
+    return response
 
 # ============================================================
 # 配置常量 - 系统运行时使用的全局常量与状态字典
@@ -145,6 +179,136 @@ SD_SYNC_INTERVAL = 300
 # 本地数据集图片存储目录，从 ESP32 SD 卡同步下来的图片保存在此处
 # 路径: 项目根目录/dataset/images/
 DATASET_DIR = os.path.join(BASE_DIR, "dataset", "images")
+OFFLINE_EVENTS_DIR = os.path.join(BASE_DIR, "offline_events")
+offline_event_cache = OfflineEventCache(OFFLINE_EVENTS_DIR)
+offline_event_sync_lock = ProcessSyncLock(os.path.join(OFFLINE_EVENTS_DIR, ".sync-lock.db"))
+EVENTS_SINK_URL = os.environ.get("AGRIVISION_EVENTS_SINK_URL", "").strip()
+MQTT_BROKER_URL = os.environ.get("AGRIVISION_MQTT_BROKER_URL", "").strip()
+MQTT_TOPIC = os.environ.get("AGRIVISION_MQTT_TOPIC", "").strip()
+MQTT_CLIENT_ID = os.environ.get("AGRIVISION_MQTT_CLIENT_ID", "agrivision-system-b").strip()
+MQTT_USERNAME = os.environ.get("AGRIVISION_MQTT_USERNAME")
+MQTT_PASSWORD = os.environ.get("AGRIVISION_MQTT_PASSWORD")
+MQTT_CA_CERTS = os.environ.get("AGRIVISION_MQTT_CA_CERTS")
+
+
+def _read_nonnegative_float(name, default):
+    raw_value = os.environ.get(name, str(default)).strip()
+    try:
+        value = float(raw_value)
+    except ValueError:
+        logger.warning("invalid numeric environment variable name=%s", name)
+        return default
+    return value if value >= 0 else default
+
+
+def _read_bounded_int(name, default, lower, upper):
+    raw_value = os.environ.get(name, str(default)).strip()
+    try:
+        value = int(raw_value)
+    except ValueError:
+        logger.warning("invalid integer environment variable name=%s", name)
+        return default
+    return value if lower <= value <= upper else default
+
+
+EVENTS_SYNC_INTERVAL = _read_nonnegative_float("AGRIVISION_EVENTS_SYNC_INTERVAL", 0)
+EVENTS_SYNC_LIMIT = _read_bounded_int("AGRIVISION_EVENTS_SYNC_LIMIT", 50, 1, 100)
+
+
+event_transport = None
+if EVENTS_SINK_URL:
+    try:
+        event_transport = EventTransport(EVENTS_SINK_URL, send_events_http)
+    except ValueError as error:
+        logger.warning("event_sink_config_invalid error=%s", error)
+
+mqtt_transport = None
+mqtt_close = None
+event_sync_scheduler = None
+event_sync_status = EventSyncStatus()
+
+
+def get_mqtt_transport():
+    """Create the MQTT client only after an explicit sync request."""
+    global mqtt_transport, mqtt_close
+    if mqtt_transport is not None:
+        return mqtt_transport
+    if not MQTT_BROKER_URL or not MQTT_TOPIC or not MQTT_CLIENT_ID:
+        raise ValueError("mqtt runtime is not configured")
+    mqtt_transport, mqtt_close = create_paho_transport(
+        MQTT_BROKER_URL,
+        MQTT_TOPIC,
+        MQTT_CLIENT_ID,
+        username=MQTT_USERNAME,
+        password=MQTT_PASSWORD,
+        ca_certs=MQTT_CA_CERTS,
+    )
+    return mqtt_transport
+
+
+@atexit.register
+def close_mqtt_runtime():
+    if mqtt_close is not None:
+        mqtt_close()
+
+
+def sync_offline_events_once():
+    """Sync one bounded batch for the opt-in background scheduler."""
+    if not offline_event_sync_lock.acquire(blocking=False):
+        event_sync_status.record("skipped", "none", len(offline_event_cache.list_pending()))
+        return {"sent": 0, "skipped": "sync already running"}
+    try:
+        transport_name = "mqtt" if MQTT_BROKER_URL else "http" if event_transport is not None else "none"
+        events = offline_event_cache.list_pending()[:EVENTS_SYNC_LIMIT]
+        if not events:
+            event_sync_status.record("empty", transport_name, 0)
+            return {"sent": 0, "acked": 0, "pending": 0}
+        transport = get_mqtt_transport() if MQTT_BROKER_URL else event_transport
+        if transport is None:
+            event_sync_status.record("skipped", "none", len(events))
+            return {"sent": 0, "acked": 0, "pending": len(events)}
+        result = transport.sync(events, offline_event_cache.ack)
+        pending = len(offline_event_cache.list_pending())
+        outcome = "success" if result["sent"] == len(events) else "failure"
+        event_sync_status.record(
+            outcome,
+            transport_name,
+            pending,
+            sent=result.get("sent", 0),
+            acked=result.get("acked", 0),
+            failure_type=result.get("failure_type", "") if outcome == "failure" else "",
+        )
+        return {**result, "pending": pending}
+    except Exception:
+        logger.exception("automatic offline event sync failed")
+        event_sync_status.record(
+            "failure",
+            transport_name,
+            len(offline_event_cache.list_pending()),
+            failure_type="runtime",
+        )
+        return {"sent": 0, "acked": 0, "error": "sync failed"}
+    finally:
+        offline_event_sync_lock.release()
+
+
+def start_event_sync_scheduler():
+    """Start automatic event sync only when an explicit interval is configured."""
+    global event_sync_scheduler
+    if EVENTS_SYNC_INTERVAL <= 0 or (not MQTT_BROKER_URL and event_transport is None):
+        return False
+    event_sync_scheduler = EventSyncScheduler(
+        sync_offline_events_once,
+        EVENTS_SYNC_INTERVAL,
+        logger=logger,
+    )
+    return event_sync_scheduler.start()
+
+
+@atexit.register
+def stop_event_sync_scheduler():
+    if event_sync_scheduler is not None:
+        event_sync_scheduler.stop(timeout=5)
 
 # 异常图片保存间隔（秒）：当检测到"注意"及以上等级时，每隔此时间保存一张标注图到 detection_logs/
 SAVE_INTERVAL = 60
@@ -413,6 +577,13 @@ def run_detection_once(camera_id=None):
             "white_ratio": avg_white_ratio,
             "green_ratio": avg_green_ratio,
         }
+
+        # 将检测摘要写入有界离线队列，供网络恢复后的传输器消费。
+        # 队列只保存事件摘要，不保存图像、URL 或通知配置。
+        try:
+            offline_event_cache.put(build_detection_event(camera_id, stable_result))
+        except (TypeError, ValueError, OSError) as cache_error:
+            logger.warning("offline_event_enqueue_failed event=offline_event_enqueue_failed error=%s", cache_error)
 
         # 将标注后的图像编码为 JPEG 字节流
         _, buf = cv2.imencode('.jpg', annotated)
@@ -1929,6 +2100,33 @@ def index():
     return HTML_PAGE
 
 
+@app.route('/health/live')
+def health_live():
+    """Liveness probe: the web process is accepting requests."""
+    return jsonify({"status": "alive", "service": "system-b"})
+
+
+@app.route('/health/ready')
+def health_ready():
+    """Readiness probe: report model and camera availability."""
+    camera_summaries = []
+    for camera_id, camera in cameras.items():
+        with camera["state"]["frame_lock"]:
+            camera_summaries.append(summarize_camera(camera_id, camera["state"]))
+
+    camera_ready = any(camera["has_frame"] for camera in camera_summaries if cameras[camera["id"]].get("enabled", True))
+    yolo_ready = (not yolo_enabled) or yolo_detector.is_loaded()
+    payload = build_service_health("system-b", {"camera": camera_ready, "yolo": yolo_ready})
+    payload["cameras"] = camera_summaries
+    return jsonify(payload), (200 if payload["status"] == "ready" else 503)
+
+
+@app.route('/health')
+def health():
+    """Compatibility health endpoint; use /health/ready for deployment probes."""
+    return health_ready()
+
+
 # ---------- 2. 摄像头接口 ----------
 @app.route('/api/cameras')
 def api_cameras():
@@ -2087,9 +2285,12 @@ def api_params():
     else:
         # 保存用户修改后的参数
         try:
-            params = request.get_json()
+            params = request.get_json(silent=True)
+            is_valid, errors = config_manager.validate_params(params)
+            if not is_valid:
+                return jsonify({"success": False, "errors": errors}), 400
             with config_lock:
-                config_manager.save_config(params)
+                config_manager.update_params(params)
             return jsonify({"success": True, "message": "参数已保存"})
         except Exception as e:
             return jsonify({"success": False, "message": str(e)}), 500
@@ -2294,6 +2495,98 @@ def api_sync_status():
         return jsonify(sd_sync_info.copy())
 
 
+@app.route('/api/offline_events')
+def api_offline_events():
+    """Return bounded detection events waiting for a future transport worker."""
+    events = offline_event_cache.list_pending()
+    return jsonify({"count": len(events), "events": events})
+
+
+@app.route('/api/offline_events/ack', methods=['POST'])
+def api_offline_events_ack():
+    """Acknowledge one event after an external transport confirms delivery."""
+    params = request.get_json(silent=True) or {}
+    event_id = params.get("event_id")
+    try:
+        offline_event_cache.ack(event_id)
+    except ValueError as error:
+        return jsonify({"success": False, "error": str(error)}), 400
+    return jsonify({"success": True})
+
+
+@app.route('/api/offline_events/sync', methods=['POST'])
+def api_offline_events_sync():
+    """Manually sync a bounded batch; remove events only after 2xx delivery."""
+    if event_transport is None:
+        return jsonify({"success": False, "error": "event sink is not configured"}), 503
+    if not offline_event_sync_lock.acquire(blocking=False):
+        return jsonify({"success": False, "error": "event sync is already running"}), 409
+
+    try:
+        params = request.get_json(silent=True) or {}
+        if not isinstance(params, dict):
+            return jsonify({"success": False, "error": "request body must be a JSON object"}), 400
+        limit = params.get("limit", 50)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            return jsonify({"success": False, "error": "limit must be an integer from 1 to 100"}), 400
+
+        events = offline_event_cache.list_pending()[:limit]
+        result = event_transport.sync(events, offline_event_cache.ack)
+        pending = len(offline_event_cache.list_pending())
+        return jsonify({
+            "success": result["sent"] == len(events),
+            "pending": pending,
+            **result,
+        })
+    finally:
+        offline_event_sync_lock.release()
+
+
+@app.route('/api/offline_events/sync_mqtt', methods=['POST'])
+def api_offline_events_sync_mqtt():
+    """Manually publish a bounded batch through the opt-in MQTT runtime."""
+    if not offline_event_sync_lock.acquire(blocking=False):
+        return jsonify({"success": False, "error": "event sync is already running"}), 409
+
+    try:
+        try:
+            transport = get_mqtt_transport()
+        except Exception:
+            return jsonify({"success": False, "error": "mqtt runtime is not configured"}), 503
+
+        params = request.get_json(silent=True) or {}
+        if not isinstance(params, dict):
+            return jsonify({"success": False, "error": "request body must be a JSON object"}), 400
+        limit = params.get("limit", 50)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            return jsonify({"success": False, "error": "limit must be an integer from 1 to 100"}), 400
+
+        events = offline_event_cache.list_pending()[:limit]
+        result = transport.sync(events, offline_event_cache.ack)
+        pending = len(offline_event_cache.list_pending())
+        return jsonify({
+            "success": result["sent"] == len(events),
+            "pending": pending,
+            **result,
+        })
+    finally:
+        offline_event_sync_lock.release()
+
+
+@app.route('/api/offline_events/sync_status')
+def api_offline_events_sync_status():
+    """Return safe operational state for the opt-in background event sync."""
+    transport_name = "mqtt" if MQTT_BROKER_URL else "http" if event_transport is not None else "none"
+    enabled = EVENTS_SYNC_INTERVAL > 0 and transport_name != "none"
+    return jsonify(event_sync_status.snapshot(
+        enabled=enabled,
+        interval_seconds=EVENTS_SYNC_INTERVAL,
+        transport=transport_name,
+        running=event_sync_scheduler.running if event_sync_scheduler is not None else False,
+        pending=len(offline_event_cache.list_pending()),
+    ))
+
+
 # ---------- 8. MJPEG 视频流接口 ----------
 # 该接口实现 MJPEG (Motion JPEG) 视频流推送
 # 原理: 使用 HTTP 分块传输编码 (chunked transfer) + multipart/x-mixed-replace MIME 类型
@@ -2382,7 +2675,7 @@ def api_deep_diagnose():
 
         resp = requests.post(
             report_url,
-            files={"image": ("frame.jpg", image_bytes, "image/jpeg")},
+            files={"file": ("frame.jpg", image_bytes, "image/jpeg")},
             timeout=180  # LLM 推理较慢，给足超时
         )
 
@@ -2786,6 +3079,9 @@ if __name__ == '__main__':
         # 第三步: 启动 SD 卡同步后台守护线程
         sd_thread = threading.Thread(target=sd_sync_loop, args=(cid,), daemon=True)
         sd_thread.start()
+
+    if start_event_sync_scheduler():
+        print(f"  离线事件自动同步已启用: 每 {EVENTS_SYNC_INTERVAL:g} 秒")
 
     # 第四步: 打印启动信息
     print("=" * 50)

@@ -208,8 +208,8 @@ if 连续N帧等级 == X:
   {
     "id": "cam1",
     "name": "温室1号",
-    "url": "http://192.168.43.100/capture",
-    "base": "http://192.168.43.100",
+    "url": "http://192.0.2.10/capture",
+    "base": "http://192.0.2.10",
     "enabled": true
   }
 ]
@@ -659,6 +659,59 @@ ESP32-CAM 固件提供以下 HTTP 端点供 System B 调用：
 | `/api/sync_now` | GET | `camera_id` | 手动触发 SD 同步 |
 | `/api/sync_status` | GET | - | 查询同步进度 |
 
+### 9.9.1 离线事件队列
+
+System B 会把检测摘要写入本地有界队列 `offline_events/`，用于网络恢复后的传输器消费。队列不保存图像、摄像头 URL、Webhook 或凭据；达到条数/字节上限时会淘汰最旧事件。
+
+| 路径 | 方法 | 说明 |
+|------|------|------|
+| `/api/offline_events` | GET | 返回待同步事件及数量 |
+| `/api/offline_events/ack` | POST | 外部传输成功后按 `event_id` 确认删除 |
+| `/api/offline_events/sync` | POST | 手动发送有界批次；仅在传输返回 2xx 后确认删除 |
+| `/api/offline_events/sync_status` | GET | 返回脱敏的自动同步状态、队列数量和固定计数 |
+
+如需显式启用 HTTP 同步，请设置环境变量 `AGRIVISION_EVENTS_SINK_URL`。远端地址必须使用 HTTPS；仅允许 `localhost`、`127.0.0.1` 或 `::1` 使用 HTTP。服务默认不自动外发，避免部署时因误配置产生数据流出。每次请求携带由有序事件批次生成的 `Idempotency-Key`，接收端应按该键或事件 `event_id` 去重。
+
+当前版本提供本地队列、确认接口、受限的手动同步和默认关闭的自动调度；同步接口与后台调度通过同一主机的 SQLite 运行时锁串行执行，并发请求返回 409。自动调度不等同于真实公网或 ESP32 断网恢复联调。
+
+### 9.9.2 本地端到端验收
+
+`tests/test_stage5_e2e.py` 提供不联网的内存接收端：第一次模拟接收后响应丢失，第二次以相同幂等键重试并返回 208。测试验证接收端只保留一份事件，且本地队列只在成功响应后删除。它是协议验收，不代表真实 HTTPS 服务、MQTT broker 或 ESP32 已完成联调。
+
+`tests/test_stage6_http_loopback.py` 会启动临时本机 HTTP 接收端，验证 `event_transport.send_events_http` 实际发送的 JSON 和 `Idempotency-Key`。服务使用随机端口并在测试结束后关闭，不产生公网流量。
+
+### 9.9.3 MQTT 契约准备
+
+`event_mqtt.MqttEventTransport` 是注入式 MQTT 适配层：调用方提供发布器，适配层负责具体主题校验、版本化批次载荷、QoS 1、`retain=False`、有限重试和成功后确认。当前版本不自动建立 broker 连接；接入真实客户端前必须补充 TLS/认证配置、接收端幂等处理和设备现场日志。
+
+该契约测试已在 GitHub Actions 干净 Runner 上通过；请将其视为软件回归证据，不要替代真实 broker 和设备现场验收。
+
+`tests/test_stage10_local_mqtt_broker.py` 使用标准库临时 broker 做协议级验收，配合 `requirements-mqtt.txt` 中的 Paho 2.1.0 可验证本机 CONNECT、QoS 1、PUBACK 和关闭流程。它只监听 `127.0.0.1` 随机端口；公网 TLS、认证、ACL、重连和 ESP32 链路仍需单独验收。
+
+`tests/test_stage23_mqtt_tls_local.py` 进一步使用临时自签名 CA 和 TLS broker 验证 `mqtts://`、`ca_certs`、TLS 握手、QoS 1 发布和确认。证书只存在测试临时目录；公网证书链、认证、ACL、证书轮换和 ESP32 链路仍需单独验收。
+
+`tests/test_stage24_mqtt_auth_local.py` 在同样的回环 TLS broker 上验证独立 username/password 注入；正确凭据可以发布，错误凭据会被 CONNACK 拒绝，不会发布事件。运行时会检查 MQTT v5 `ReasonCode`，认证失败统一返回不泄露配置的连接错误。
+
+MQTT broker 地址应通过 `mqtt_config.validate_broker_url` 校验：远端使用 `mqtts://host:8883`，本机开发可使用 `mqtt://127.0.0.1:1883`。不要把账号、密码或路径写入 URL；自动调度启用后才会在首次发送时建立 broker 连接。
+
+如需接入 Paho，可安装 `requirements-mqtt.txt`，调用 `mqtt_runtime.create_paho_transport(...)` 获取传输器和 `close` 回调。broker URL、topic、client ID 和凭据应从部署环境注入；函数不会在模块导入时连接。关闭服务前应调用 `close`，以停止 Paho 网络循环。当前仓库只用假客户端测试该生命周期，未提供真实 broker 凭据。
+
+System B 的 `/api/offline_events/sync_mqtt` 是手动入口，不会在启动时自动连接。配置 `AGRIVISION_MQTT_BROKER_URL`、`AGRIVISION_MQTT_TOPIC` 和 `AGRIVISION_MQTT_CLIENT_ID` 后，再按需通过请求体 `{"limit": 50}` 触发；用户名/密码使用独立环境变量注入，不能写入 URL。初始连接最多重试 5 次，未配置或最终连接失败时返回 503，响应不包含 broker 地址或凭据。
+
+连接建立后由 Paho 网络循环负责运行中重连；本地测试已模拟 broker 主动断开并验证恢复。生产部署仍需在真实网络条件下验证 TLS、认证、ACL、长时间抖动和设备恢复。
+
+### 9.9.4 自动同步配置
+
+自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后，服务启动时会创建可停止的后台调度线程；设置为 `0` 或不设置则不自动外发。每轮最多同步 `AGRIVISION_EVENTS_SYNC_LIMIT` 条事件（默认 50，范围 1–100），优先使用完整 MQTT 配置，否则使用 `AGRIVISION_EVENTS_SINK_URL` 的 HTTP sink。同步失败不会删除本地事件，后台异常也不会终止调度线程。
+
+通过 `/api/offline_events/sync_status` 可查看 `enabled`、`running`、`pending`、成功/失败批次数、发送/确认事件数和 UTC 时间戳。接口不会返回 broker 地址、账号、密码、异常原文或事件正文；`last_error` 只会返回固定的 `sync failed`。
+
+HTTP 同步对错误分类处理：4xx 返回会标记为 `permanent` 并停止重试；5xx、其他非 2xx 和网络异常最多按配置重试，耗尽后标记为 `retry_exhausted`。`/api/offline_events/sync_status` 的 `last_failure_type` 只会返回固定类别，不返回 HTTP 响应正文。
+
+### 9.9.5 多进程部署边界
+
+System B 使用 `offline_events/.sync-lock.db` 的 SQLite `BEGIN IMMEDIATE` 作为同一主机上的非阻塞同步锁，手动接口和后台调度共用它。该文件属于运行时数据并已被 Git 忽略，不应复制到公开仓库。它不能替代跨主机、跨容器或多节点部署中的分布式锁；这类部署应由上层编排系统保证单一消费者，或另行接入经过认证的协调服务。
+
 ### 9.10 告警接口
 
 | 路径 | 方法 | 说明 |
@@ -668,7 +721,14 @@ ESP32-CAM 固件提供以下 HTTP 端点供 System B 调用：
 | `/api/alert/history` | GET | 获取告警历史 |
 | `/api/alert/test` | POST | 发送测试告警 |
 
-### 9.11 A-B 浅连接接口
+### 9.11 健康检查接口
+
+| 路径 | 方法 | 说明 |
+|------|------|------|
+| `/health/live` | GET | 进程存活检查，服务能响应即返回 200 |
+| `/health/ready` | GET | 检查启用摄像头是否有帧、YOLO 是否就绪；降级时返回 503 |
+
+### 9.12 A-B 浅连接接口
 
 | 路径 | 方法 | 说明 |
 |------|------|------|
@@ -683,7 +743,9 @@ ESP32-CAM 固件提供以下 HTTP 端点供 System B 调用：
 
 流程: 获取当前帧 → JPEG 编码 → POST 到 System A `/report` → 返回诊断报告 (超时 180 秒)
 
-### 9.12 视频流接口
+代理请求使用 multipart 字段 `file`，与 System A `/report` 的 `UploadFile` 参数保持一致。System A 默认 CORS 仅允许本机 A/B 地址；跨主机部署时应设置 `CORS_ORIGINS` 环境变量。
+
+### 9.13 视频流接口
 
 | 路径 | 方法 | 说明 |
 |------|------|------|

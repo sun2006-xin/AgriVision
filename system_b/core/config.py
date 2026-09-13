@@ -7,7 +7,9 @@
 """
 
 import json
+import math
 import os
+import tempfile
 from detection_enhanced import DetectionConfig, DEFAULT_CONFIG
 
 # 配置文件存放目录，位于本模块所在目录下的 config/ 文件夹
@@ -114,12 +116,20 @@ class ConfigManager:
         :return: True 保存成功，False 保存失败
         """
         try:
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            fd, temp_path = tempfile.mkstemp(
+                prefix="detection_params.", suffix=".tmp", dir=CONFIG_DIR
+            )
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 json.dump(params, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, CONFIG_FILE)
             self.current_config = params
             return True
         except IOError as e:
             print(f"保存配置失败: {e}")
+            if 'temp_path' in locals() and os.path.exists(temp_path):
+                os.remove(temp_path)
             return False
     
     def get_current_config(self):
@@ -209,8 +219,12 @@ class ConfigManager:
                  errors 为错误信息列表（为空时表示无错误）
         """
         errors = []
+        if not isinstance(params, dict):
+            return False, ["参数必须是 JSON 对象"]
+
         # 以 DEFAULT_CONFIG 作为"参数白名单"和类型参照标准
         defaults = DEFAULT_CONFIG.to_dict()
+        param_info = self.get_param_info()
         
         for key, value in params.items():
             if key not in defaults:
@@ -229,6 +243,15 @@ class ConfigManager:
             elif isinstance(default_value, float):
                 if not isinstance(value, (int, float)):
                     errors.append(f"参数 {key} 必须为数字，当前值: {value}")
+
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if not math.isfinite(float(value)):
+                    errors.append(f"参数 {key} 必须是有限数值，当前值: {value}")
+                bounds = param_info.get(key)
+                if bounds and not bounds["min"] <= value <= bounds["max"]:
+                    errors.append(
+                        f"参数 {key} 超出范围 [{bounds['min']}, {bounds['max']}]，当前值: {value}"
+                    )
         
         return len(errors) == 0, errors
     

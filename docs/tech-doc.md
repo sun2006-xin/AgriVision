@@ -90,6 +90,8 @@ AgriVision/
 |------|------|------|
 | GET | / | 前端页面(frontend.html) |
 | GET | /health | 健康检查 |
+| GET | /health/live | 进程存活检查 |
+| GET | /health/ready | 模型就绪检查 |
 | POST | /predict | 分类(ONNX) |
 | POST | /detect | 检测(YOLO) |
 | POST | /segment | 分割(YOLO-seg) |
@@ -210,6 +212,19 @@ ESP32-CAM -> fetch_image() -> run_detection_once()
 | GET | /api/save_status | 拍照状态 |
 | GET | /api/sync_now | 手动SD同步 |
 | GET | /api/sync_status | 同步状态 |
+| POST | /api/offline_events/sync | 手动发送有界离线事件批次；2xx 后确认删除 |
+| POST | /api/offline_events/sync_mqtt | 手动通过可选 MQTT 运行时发送有界批次；2xx 后确认删除 |
+| GET | /api/offline_events/sync_status | 查看脱敏的自动同步运行状态与计数 |
+
+离线事件同步使用 `system_b/core/process_sync_lock.py` 在同一主机上建立 SQLite 非阻塞互斥，避免多个 Flask worker 同时消费同一批事件。锁数据库位于被 Git 忽略的 `system_b/core/offline_events/` 运行目录；跨主机、多容器部署仍需外部协调机制。
+
+HTTP sink 返回 4xx 时不会继续重试，返回 5xx 或网络异常时才进行有界重试；失败类别以固定枚举写入脱敏状态接口。
+
+MQTT TLS 本机回归由 `tests/test_stage23_mqtt_tls_local.py` 使用临时 CA 和回环 TLS broker 完成，验证范围包括 `mqtts://`、CA 校验、MQTT v5 CONNECT、QoS 1 和队列确认；不包含公网证书链、认证或设备现场链路。
+
+MQTT 认证本机回归由 `tests/test_stage24_mqtt_auth_local.py` 使用合成凭据验证独立 username/password 注入和认证失败 CONNACK；运行时不把凭据放入 URL 或错误响应，公网认证与 ACL 仍需部署验收。
+
+离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
 ### 3.6 启动方式
 
