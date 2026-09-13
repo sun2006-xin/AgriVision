@@ -246,6 +246,8 @@ MQTT 发布器将 Paho `RuntimeError` 与其他发布失败统一纳入有界重
 
 阶段 35 将该 smoke 接入 `.github/workflows/public-quality.yml` 的独立 `browser-smoke` job。Job 使用本地服务、有限 curl 探活、15 分钟超时和最终清理；Chromium 以 `--disable-dev-shm-usage`、`--disable-gpu` 和 `--no-sandbox` 启动以适配受限 CI runner。生产服务不安装 UI 测试依赖。
 
+阶段 36 的浏览器 smoke 进一步监听 `pageerror` 和 `console.error`，确保状态接口故障只产生预期的固定提示，不留下未处理前端错误；被测 503 和 favicon 响应均由测试脚本显式控制。
+
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
 ### 3.6 启动方式
