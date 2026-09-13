@@ -117,6 +117,12 @@ AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实�
 - 支持独立的 `AGRIVISION_MQTT_BROKER_URL`、`AGRIVISION_MQTT_TOPIC`、`AGRIVISION_MQTT_CLIENT_ID`、`AGRIVISION_MQTT_USERNAME`、`AGRIVISION_MQTT_PASSWORD` 和可选 CA 路径环境变量。
 - 连接失败统一返回不含地址/凭据的 503；真实部署仍需 TLS 证书、认证、ACL、重连和 ESP32 现场验收。
 
+## 阶段 17：MQTT 初始连接重试（已完成基础项）
+
+- Paho 运行时已增加最多 5 次的有界初始连接重试和线性退避；连接成功后再启动网络循环。
+- 初始连接最终失败时转换为通用运行时错误，由 System B 返回不泄露配置的 503。
+- Paho 已有的断线重连、真实 broker 认证、TLS 证书链和 ESP32 无线恢复仍需部署环境验收。
+
 ## 发布规则
 
 每个阶段单独建立分支、完成测试和隐私扫描后提交并推送；模型缓存、数据库、摄像头地址、Webhook 和本地日志不得进入公开提交。

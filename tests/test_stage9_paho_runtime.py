@@ -94,6 +94,58 @@ class Stage9PahoRuntimeTests(unittest.TestCase):
         self.assertEqual(calls[2], ("loop_start",))
         self.assertEqual(calls[-2:], [("disconnect",), ("loop_stop",)])
 
+    def test_initial_connection_retries_with_a_bounded_limit(self):
+        from mqtt_runtime import create_paho_transport
+
+        calls = []
+
+        class FlakyClient:
+            def __init__(self, **kwargs):
+                pass
+
+            def connect(self, host, port, keepalive):
+                calls.append((host, port, keepalive))
+                if len(calls) == 1:
+                    raise OSError("temporary broker outage")
+
+            def loop_start(self):
+                calls.append("loop_start")
+
+            def disconnect(self):
+                calls.append("disconnect")
+
+            def loop_stop(self):
+                calls.append("loop_stop")
+
+        fake_client_module = types.ModuleType("paho.mqtt.client")
+        fake_client_module.Client = FlakyClient
+        fake_client_module.CallbackAPIVersion = types.SimpleNamespace(VERSION2=2)
+        fake_client_module.MQTTv5 = 5
+        fake_mqtt_module = types.ModuleType("paho.mqtt")
+        fake_paho_module = types.ModuleType("paho")
+        fake_paho_module.mqtt = fake_mqtt_module
+        fake_mqtt_module.client = fake_client_module
+
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "paho": fake_paho_module,
+                "paho.mqtt": fake_mqtt_module,
+                "paho.mqtt.client": fake_client_module,
+            },
+        ):
+            _, close = create_paho_transport(
+                "mqtt://127.0.0.1:1883",
+                "agrivision/events",
+                "agrivision-retry",
+                connect_attempts=2,
+                connect_backoff_seconds=0,
+            )
+            close()
+
+        self.assertEqual(calls[:2], [("127.0.0.1", 1883, 30), ("127.0.0.1", 1883, 30)])
+        self.assertEqual(calls[-3:], ["loop_start", "disconnect", "loop_stop"])
+
 
 if __name__ == "__main__":
     unittest.main()

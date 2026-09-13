@@ -1,6 +1,7 @@
 """Optional Paho MQTT runtime; no broker connection occurs at import time."""
 
 import re
+from time import sleep
 from urllib.parse import urlparse
 
 from event_mqtt import MqttEventTransport
@@ -25,6 +26,8 @@ def create_paho_transport(
     ca_certs=None,
     max_attempts=3,
     backoff_seconds=0.5,
+    connect_attempts=3,
+    connect_backoff_seconds=0.5,
 ):
     """Create a connected Paho transport and a close callback.
 
@@ -37,6 +40,10 @@ def create_paho_transport(
         raise ValueError("MQTT username must be a non-empty string")
     if username is not None and not isinstance(password, str):
         raise ValueError("MQTT password is required when username is set")
+    if not 1 <= connect_attempts <= 5:
+        raise ValueError("connect_attempts must be between 1 and 5")
+    if connect_backoff_seconds < 0:
+        raise ValueError("connect_backoff_seconds must not be negative")
 
     try:
         import paho.mqtt.client as mqtt
@@ -54,7 +61,16 @@ def create_paho_transport(
     if parsed.scheme == "mqtts":
         client.tls_set(ca_certs=ca_certs)
 
-    client.connect(parsed.hostname, parsed.port or (8883 if parsed.scheme == "mqtts" else 1883), 30)
+    port = parsed.port or (8883 if parsed.scheme == "mqtts" else 1883)
+    for attempt in range(1, connect_attempts + 1):
+        try:
+            client.connect(parsed.hostname, port, 30)
+            break
+        except Exception as error:
+            if attempt == connect_attempts:
+                raise RuntimeError("MQTT broker connection failed") from error
+            if connect_backoff_seconds:
+                sleep(connect_backoff_seconds * attempt)
     client.loop_start()
 
     def publisher(publish_topic, payload, qos, retain):
