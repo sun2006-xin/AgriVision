@@ -143,7 +143,8 @@ class Stage9PahoRuntimeTests(unittest.TestCase):
             )
             close()
 
-        self.assertEqual(calls[:2], [("127.0.0.1", 1883, 30), ("127.0.0.1", 1883, 30)])
+        connect_calls = [call for call in calls if isinstance(call, tuple) and len(call) == 3]
+        self.assertEqual(connect_calls, [("127.0.0.1", 1883, 30), ("127.0.0.1", 1883, 30)])
         self.assertEqual(calls[-3:], ["loop_start", "disconnect", "loop_stop"])
 
 

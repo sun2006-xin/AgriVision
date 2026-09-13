@@ -226,6 +226,8 @@ MQTT 认证本机回归由 `tests/test_stage24_mqtt_auth_local.py` 使用合成�
 
 MQTT 连接运行时对所有真实 Paho 客户端统一等待 MQTT v5 CONNACK，并检查失败原因；无认证连接也不会仅凭 TCP 建连成功就返回可用传输器。阶段 25 的失败 CONNACK 回归位于 `tests/test_stage25_mqtt_connack_validation.py`，不连接公网、不写入凭据。
 
+初始连接重试若遇到失败 CONNACK，会先停止当前网络循环并丢弃旧 Paho client，再按原配置创建新的 client 重试；这样不会把旧 socketpair、回调或 `reconnect_on_failure` 临时状态带入下一轮。阶段 26 的生命周期回归位于 `tests/test_stage26_mqtt_retry_lifecycle.py`。
+
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
 ### 3.6 启动方式

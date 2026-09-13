@@ -52,20 +52,25 @@ def create_paho_transport(
         raise RuntimeError("install requirements-mqtt.txt to enable MQTT runtime") from error
 
     parsed = urlparse(normalized_url)
-    client = mqtt.Client(
-        callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
-        client_id=client_id,
-        protocol=mqtt.MQTTv5,
-    )
-    if username is not None:
-        client.username_pw_set(username, password)
-    if parsed.scheme == "mqtts":
-        client.tls_set(ca_certs=ca_certs)
+    def build_client():
+        new_client = mqtt.Client(
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
+            client_id=client_id,
+            protocol=mqtt.MQTTv5,
+        )
+        if username is not None:
+            new_client.username_pw_set(username, password)
+        if parsed.scheme == "mqtts":
+            new_client.tls_set(ca_certs=ca_certs)
+        return new_client
+
+    client = build_client()
 
     port = parsed.port or (8883 if parsed.scheme == "mqtts" else 1883)
     loop_started = False
     connection_event = threading.Event()
     connection_failure = []
+    reconnect_on_failure = None
 
     def on_connect(_client, _userdata, _flags, reason_code, _properties):
         failure = getattr(reason_code, "is_failure", None)
@@ -102,6 +107,8 @@ def create_paho_transport(
                 client.reconnect_on_failure = reconnect_on_failure
             break
         except Exception as error:
+            if validate_connack and reconnect_on_failure is not None:
+                client.reconnect_on_failure = reconnect_on_failure
             if attempt == connect_attempts:
                 try:
                     client.disconnect()
@@ -116,6 +123,25 @@ def create_paho_transport(
                 except Exception:
                     pass
                 raise RuntimeError("MQTT broker connection failed") from error
+            try:
+                client.disconnect()
+            except Exception:
+                pass
+            try:
+                client.loop_stop()
+            except Exception:
+                pass
+            try:
+                # Paho keeps its internal wake-up socketpair after loop_stop.
+                client.reinitialise()
+            except Exception:
+                pass
+            loop_started = False
+            # Use a fresh configured client so a failed connection cannot leak
+            # transport state, callbacks, or socket resources into a retry.
+            client = build_client()
+            if validate_connack:
+                client.on_connect = on_connect
             if connect_backoff_seconds:
                 sleep(connect_backoff_seconds * attempt)
     if not loop_started:
