@@ -42,7 +42,16 @@ class EventSyncStatus:
             elif outcome == "failure":
                 self._batches_failed += 1
 
-    def snapshot(self, enabled, interval_seconds, transport, running, pending):
+    def snapshot(
+        self,
+        enabled,
+        interval_seconds,
+        transport,
+        running,
+        pending,
+        mqtt_connack_timeout=None,
+        mqtt_publish_timeout=None,
+    ):
         with self._lock:
             return {
                 "enabled": bool(enabled),
@@ -50,6 +59,8 @@ class EventSyncStatus:
                 "transport": transport,
                 "running": bool(running),
                 "pending": max(0, int(pending)),
+                "mqtt_connack_timeout_seconds": mqtt_connack_timeout,
+                "mqtt_publish_timeout_seconds": mqtt_publish_timeout,
                 "batches_succeeded": self._batches_succeeded,
                 "batches_failed": self._batches_failed,
                 "events_sent": self._events_sent,

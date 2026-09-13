@@ -2598,6 +2598,8 @@ def api_offline_events_sync_status():
         transport=transport_name,
         running=event_sync_scheduler.running if event_sync_scheduler is not None else False,
         pending=len(offline_event_cache.list_pending()),
+        mqtt_connack_timeout=MQTT_CONNACK_TIMEOUT if transport_name == "mqtt" else None,
+        mqtt_publish_timeout=MQTT_PUBLISH_TIMEOUT if transport_name == "mqtt" else None,
     ))
 
 
