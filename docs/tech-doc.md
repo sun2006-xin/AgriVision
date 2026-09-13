@@ -234,6 +234,8 @@ QoS 1 发布确认由 `publish_timeout` 控制，默认 10 秒，允许范围为
 
 MQTT close 回调是幂等的，并在 `disconnect()` 异常时仍尝试 `loop_stop()`；阶段 29 的生命周期回归位于 `tests/test_stage29_mqtt_close_lifecycle.py`。关闭逻辑不记录 broker 地址、凭据或异常原文。
 
+MQTT 发布器将 Paho `RuntimeError` 与其他发布失败统一纳入有界重试；耗尽后返回失败且不确认事件，不向调用方暴露异常原文。阶段 30 的回归位于 `tests/test_stage30_mqtt_publish_runtime_error.py`。
+
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
 ### 3.6 启动方式

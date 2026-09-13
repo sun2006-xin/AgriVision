@@ -64,7 +64,7 @@ class MqttEventTransport:
                     for event in events:
                         acknowledge(event["event_id"])
                     return {"sent": len(events), "attempts": attempt}
-            except (OSError, ValueError, TypeError):
+            except (OSError, RuntimeError, ValueError, TypeError):
                 pass
             if attempt < self.max_attempts and self.backoff_seconds:
                 sleep(self.backoff_seconds * attempt)
