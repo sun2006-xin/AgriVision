@@ -61,7 +61,7 @@ class Stage9PahoRuntimeTests(unittest.TestCase):
 
         fake_client_module = types.ModuleType("paho.mqtt.client")
         fake_client_module.Client = FakeClient
-        fake_client_module.CallbackAPIVersion = types.SimpleNamespace(VERSION1=1)
+        fake_client_module.CallbackAPIVersion = types.SimpleNamespace(VERSION2=2)
         fake_client_module.MQTTv5 = 5
         fake_client_module.MQTT_ERR_SUCCESS = 0
         fake_mqtt_module = types.ModuleType("paho.mqtt")

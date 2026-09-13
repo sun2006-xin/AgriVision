@@ -105,6 +105,12 @@ AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实�
 - 运行记录：[Public quality gate #6](https://github.com/sun2006-xin/AgriVision/actions/runs/34762728744)。
 - 真实 broker、TLS 证书链、认证和 ESP32 现场链路仍未验收。
 
+## 阶段 15：本机 MQTT 协议验收（已完成基础项）
+
+- 已用 Python 标准库启动临时本机 MQTT broker，并用 Paho 2.1.0 实际完成 CONNECT、QoS 1 PUBLISH/PUBACK 和正常关闭。
+- 已验证事件队列在本机 broker 接收成功后确认删除；测试仅绑定 `127.0.0.1` 随机端口，不产生公网流量。
+- 该验收不覆盖公网 broker 的 TLS 证书链、用户名/密码认证、ACL、重连策略或 ESP32 无线链路；这些仍需部署环境验收。
+
 ## 发布规则
 
 每个阶段单独建立分支、完成测试和隐私扫描后提交并推送；模型缓存、数据库、摄像头地址、Webhook 和本地日志不得进入公开提交。

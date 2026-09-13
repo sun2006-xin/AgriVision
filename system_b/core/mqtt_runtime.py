@@ -45,7 +45,7 @@ def create_paho_transport(
 
     parsed = urlparse(normalized_url)
     client = mqtt.Client(
-        callback_api_version=mqtt.CallbackAPIVersion.VERSION1,
+        callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
         client_id=client_id,
         protocol=mqtt.MQTTv5,
     )
