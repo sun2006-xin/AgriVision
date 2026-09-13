@@ -517,6 +517,8 @@ file: (二进制图片文件)
 
 **注意**: 此接口会先并行运行四引擎（`asyncio.gather`），再调用 LLM 生成报告，响应时间较长（CPU 环境可能需要 30-60 秒）。
 
+分类和 CLIP 响应包含 `uncertain` 与 `confidence_band` 字段。默认情况下分数低于 `0.55` 会标记为不确定，可通过环境变量 `AGRIVISION_UNCERTAINTY_THRESHOLD` 调整；该阈值是筛查提示，不等于经过校准的医学/农业诊断概率。
+
 ### 3.7 `POST /diagnose` -- 综合诊断（同步）
 
 一次请求同时执行分类 + 检测 + 分割 + CLIP 四引擎，结果写入历史记录。四引擎通过 `asyncio.to_thread` + `asyncio.gather` 并行执行。

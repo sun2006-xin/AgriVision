@@ -46,6 +46,7 @@ from database import (
     create_task, get_task, update_task,
     cache_get, cache_set, clear_cache,
 )
+from evaluation import assess_confidence
 
 # ======================== 路径配置 ========================
 BASE_DIR = Path(__file__).parent
@@ -53,6 +54,17 @@ MODELS_DIR = BASE_DIR.parent / "models"
 FRONTEND_PATH = BASE_DIR / "frontend.html"
 ONNX_PATH = str(MODELS_DIR / "best_model.onnx")
 YOLO_PATH = str(MODELS_DIR / "yolov8n.pt")
+
+
+def _confidence_threshold():
+    try:
+        value = float(os.environ.get("AGRIVISION_UNCERTAINTY_THRESHOLD", "0.55"))
+        return value if 0.0 <= value <= 1.0 else 0.55
+    except ValueError:
+        return 0.55
+
+
+UNCERTAINTY_THRESHOLD = _confidence_threshold()
 
 if not os.path.exists(ONNX_PATH):
     raise FileNotFoundError("请先运行 convert_to_onnx.py 生成 best_model.onnx")
@@ -196,6 +208,8 @@ class PredictResponse(BaseModel):
     status: str = "success"
     class_name: str = Field(alias="class")
     confidence: float
+    uncertain: bool = False
+    confidence_band: str = "medium"
     probabilities: dict[str, float]
 
 
@@ -223,6 +237,8 @@ class ClipResponse(BaseModel):
     status: str = "success"
     top_class: str
     top_score: float
+    uncertain: bool = False
+    confidence_band: str = "medium"
     scores: dict[str, float]  # {类别名: 相似度}
 
 
@@ -297,9 +313,13 @@ def run_predict(contents: bytes) -> dict:
     exp = np.exp(raw[0])
     probs = exp / exp.sum()
     idx = int(np.argmax(probs))
+    confidence = round(float(probs[idx]), 4)
+    confidence_info = assess_confidence(confidence, UNCERTAINTY_THRESHOLD)
     return {
         "class": CLASS_NAMES[idx],
-        "confidence": round(float(probs[idx]), 4),
+        "confidence": confidence,
+        "uncertain": confidence_info["uncertain"],
+        "confidence_band": confidence_info["band"],
         "probabilities": {c: round(float(p), 4) for c, p in zip(CLASS_NAMES, probs)},
     }
 
@@ -388,9 +408,13 @@ def run_clip(contents: bytes) -> dict:
         scores = (img_embeds @ CLIP_TEXT_EMBEDS.T).squeeze(0)
         probs = scores.softmax(dim=0)
     top_idx = int(probs.argmax())
+    top_score = round(float(probs[top_idx]), 4)
+    confidence_info = assess_confidence(top_score, UNCERTAINTY_THRESHOLD)
     return {
         "top_class": CLASS_NAMES[top_idx],
-        "top_score": round(float(probs[top_idx]), 4),
+        "top_score": top_score,
+        "uncertain": confidence_info["uncertain"],
+        "confidence_band": confidence_info["band"],
         "scores": {CLASS_NAMES[i]: round(float(probs[i]), 4) for i in range(len(CLASS_NAMES))},
     }
 
@@ -411,7 +435,8 @@ def run_report(contents: bytes, pred: dict, det: dict, seg: dict, clip: dict) ->
 
     prompt_text = (
         f"你是一位农业植物保护专家。以下是对一张作物叶片的 AI 分析结果：\n"
-        f"- 分类模型：{pred['class']}（置信度 {pred['confidence']:.1%}）\n"
+        f"- 分类模型：{pred['class']}（置信度 {pred['confidence']:.1%}，"
+        f"{'不确定，需人工复核' if pred.get('uncertain') else '可作为辅助证据'}）\n"
         f"- 检测模型：检测到 {det['total_objects']} 个目标，类别为 {boxes_info}\n"
         f"- 分割模型：分割出 {seg['total_objects']} 个区域，{seg_info}\n"
         f"- CLIP 零样本：Top3 相似度为 {clip_info}\n\n"

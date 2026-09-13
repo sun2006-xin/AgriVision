@@ -20,12 +20,26 @@ AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实�
 - 已增加 6 个跨阶段回归测试；路由/检测/存储的大规模拆分、任务取消重试和固件契约测试列入下一小迭代。
 - 验收：`python -m unittest discover -s tests -v` 通过，源码 compileall 通过。
 
-## 阶段 3：算法评估与现场闭环
+## 阶段 3：算法评估与现场闭环（评估基础已完成）
 
-- 建立按作物、病害、光照和设备来源划分的固定验证集。
-- 输出每类 Precision、Recall、F1、混淆矩阵和置信度校准结果。
-- 增加“不确定/无法判断”状态，避免把低置信度结果当作确诊。
-- 将 HSV 作为快速筛查层，将 YOLO/分割作为视觉证据层，LLM 仅负责解释与建议。
+- 已新增 `system_a/core/evaluation.py`，支持 Accuracy、每类 Precision/Recall/F1、宏平均、混淆矩阵和 ECE。
+- 已新增 `system_a/core/evaluate_predictions.py`，可对固定 JSON 预测清单运行评估，不加载模型、不上传数据。
+- System A 分类和 CLIP 输出增加 `uncertain`/`confidence_band`；低置信度结果会在 LLM 报告中标注为需要人工复核。
+- 尚未报告真实模型指标：仓库当前没有可公开验证的标注集；后续必须按作物、病害、光照和设备来源建立固定验证集。
+- 后续将 HSV 定位为快速筛查层，YOLO/分割定位为视觉证据层，LLM 仅负责解释与建议。
+
+评估清单格式示例：
+
+```json
+{
+  "labels": ["健康", "番茄早疫病"],
+  "records": [
+    {"true": "健康", "pred": "健康", "confidence": 0.92}
+  ]
+}
+```
+
+运行：`python system_a/core/evaluate_predictions.py path/to/predictions.json`。
 
 ## 阶段 4：边缘部署与可扩展集成
 
