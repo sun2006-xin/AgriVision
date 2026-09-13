@@ -59,17 +59,19 @@ class ReconnectingMqttHandler(LocalMqttHandler):
     connections = 0
 
     def handle(self):
+        connection_number = None
         while True:
             packet_type, body = read_mqtt_packet(self.rfile)
             if packet_type is None:
                 return
             if packet_type == 1:
                 self.__class__.connections += 1
+                connection_number = self.__class__.connections
                 self.wfile.write(b"\x20\x03\x00\x00\x00")
                 self.wfile.flush()
-                if self.__class__.connections == 1:
-                    return
             elif packet_type == 3:
+                if connection_number == 1:
+                    return
                 topic_length = int.from_bytes(body[:2], "big")
                 offset = 2 + topic_length
                 packet_id = int.from_bytes(body[offset:offset + 2], "big")
