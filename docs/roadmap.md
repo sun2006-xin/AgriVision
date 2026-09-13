@@ -111,6 +111,12 @@ AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实�
 - 已验证事件队列在本机 broker 接收成功后确认删除；测试仅绑定 `127.0.0.1` 随机端口，不产生公网流量。
 - 该验收不覆盖公网 broker 的 TLS 证书链、用户名/密码认证、ACL、重连策略或 ESP32 无线链路；这些仍需部署环境验收。
 
+## 阶段 16：System B MQTT 手动同步接入（已完成基础项）
+
+- 已新增 `/api/offline_events/sync_mqtt`，仅在显式请求且配置完整时懒加载 Paho 客户端；未配置时返回 503，不自动联网。
+- 支持独立的 `AGRIVISION_MQTT_BROKER_URL`、`AGRIVISION_MQTT_TOPIC`、`AGRIVISION_MQTT_CLIENT_ID`、`AGRIVISION_MQTT_USERNAME`、`AGRIVISION_MQTT_PASSWORD` 和可选 CA 路径环境变量。
+- 连接失败统一返回不含地址/凭据的 503；真实部署仍需 TLS 证书、认证、ACL、重连和 ESP32 现场验收。
+
 ## 发布规则
 
 每个阶段单独建立分支、完成测试和隐私扫描后提交并推送；模型缓存、数据库、摄像头地址、Webhook 和本地日志不得进入公开提交。

@@ -9,6 +9,7 @@
 """
 
 import os       # 操作系统相关：路径拼接、目录创建、文件列表等
+import atexit   # 进程退出时释放可选 MQTT 客户端
 import sys      # 系统路径操作：用于将虚拟环境加入模块搜索路径
 import json     # JSON 解析：读取 cameras.json 多摄像头配置
 import logging  # 标准日志：记录请求耗时和关联 ID
@@ -136,6 +137,7 @@ from observability import resolve_request_id
 from event_schema import build_detection_event
 from offline_cache import OfflineEventCache
 from event_transport import EventTransport, send_events_http
+from mqtt_runtime import create_paho_transport
 
 # 创建 Flask 应用实例
 app = Flask(__name__)
@@ -177,6 +179,12 @@ DATASET_DIR = os.path.join(BASE_DIR, "dataset", "images")
 OFFLINE_EVENTS_DIR = os.path.join(BASE_DIR, "offline_events")
 offline_event_cache = OfflineEventCache(OFFLINE_EVENTS_DIR)
 EVENTS_SINK_URL = os.environ.get("AGRIVISION_EVENTS_SINK_URL", "").strip()
+MQTT_BROKER_URL = os.environ.get("AGRIVISION_MQTT_BROKER_URL", "").strip()
+MQTT_TOPIC = os.environ.get("AGRIVISION_MQTT_TOPIC", "").strip()
+MQTT_CLIENT_ID = os.environ.get("AGRIVISION_MQTT_CLIENT_ID", "agrivision-system-b").strip()
+MQTT_USERNAME = os.environ.get("AGRIVISION_MQTT_USERNAME")
+MQTT_PASSWORD = os.environ.get("AGRIVISION_MQTT_PASSWORD")
+MQTT_CA_CERTS = os.environ.get("AGRIVISION_MQTT_CA_CERTS")
 
 
 event_transport = None
@@ -186,6 +194,33 @@ if EVENTS_SINK_URL:
         event_transport = EventTransport(EVENTS_SINK_URL, send_events_http)
     except ValueError as error:
         logger.warning("event_sink_config_invalid error=%s", error)
+
+mqtt_transport = None
+mqtt_close = None
+
+
+def get_mqtt_transport():
+    """Create the MQTT client only after an explicit sync request."""
+    global mqtt_transport, mqtt_close
+    if mqtt_transport is not None:
+        return mqtt_transport
+    if not MQTT_BROKER_URL or not MQTT_TOPIC or not MQTT_CLIENT_ID:
+        raise ValueError("mqtt runtime is not configured")
+    mqtt_transport, mqtt_close = create_paho_transport(
+        MQTT_BROKER_URL,
+        MQTT_TOPIC,
+        MQTT_CLIENT_ID,
+        username=MQTT_USERNAME,
+        password=MQTT_PASSWORD,
+        ca_certs=MQTT_CA_CERTS,
+    )
+    return mqtt_transport
+
+
+@atexit.register
+def close_mqtt_runtime():
+    if mqtt_close is not None:
+        mqtt_close()
 
 # 异常图片保存间隔（秒）：当检测到"注意"及以上等级时，每隔此时间保存一张标注图到 detection_logs/
 SAVE_INTERVAL = 60
@@ -2409,6 +2444,37 @@ def api_offline_events_sync():
 
         events = offline_event_cache.list_pending()[:limit]
         result = event_transport.sync(events, offline_event_cache.ack)
+        pending = len(offline_event_cache.list_pending())
+        return jsonify({
+            "success": result["sent"] == len(events),
+            "pending": pending,
+            **result,
+        })
+    finally:
+        offline_event_sync_lock.release()
+
+
+@app.route('/api/offline_events/sync_mqtt', methods=['POST'])
+def api_offline_events_sync_mqtt():
+    """Manually publish a bounded batch through the opt-in MQTT runtime."""
+    if not offline_event_sync_lock.acquire(blocking=False):
+        return jsonify({"success": False, "error": "event sync is already running"}), 409
+
+    try:
+        try:
+            transport = get_mqtt_transport()
+        except Exception:
+            return jsonify({"success": False, "error": "mqtt runtime is not configured"}), 503
+
+        params = request.get_json(silent=True) or {}
+        if not isinstance(params, dict):
+            return jsonify({"success": False, "error": "request body must be a JSON object"}), 400
+        limit = params.get("limit", 50)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            return jsonify({"success": False, "error": "limit must be an integer from 1 to 100"}), 400
+
+        events = offline_event_cache.list_pending()[:limit]
+        result = transport.sync(events, offline_event_cache.ack)
         pending = len(offline_event_cache.list_pending())
         return jsonify({
             "success": result["sent"] == len(events),
