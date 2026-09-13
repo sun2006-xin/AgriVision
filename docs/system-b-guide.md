@@ -677,6 +677,8 @@ System B 会把检测摘要写入本地有界队列 `offline_events/`，用于�
 
 `tests/test_stage5_e2e.py` 提供不联网的内存接收端：第一次模拟接收后响应丢失，第二次以相同幂等键重试并返回 208。测试验证接收端只保留一份事件，且本地队列只在成功响应后删除。它是协议验收，不代表真实 HTTPS 服务、MQTT broker 或 ESP32 已完成联调。
 
+`tests/test_stage6_http_loopback.py` 会启动临时本机 HTTP 接收端，验证 `event_transport.send_events_http` 实际发送的 JSON 和 `Idempotency-Key`。服务使用随机端口并在测试结束后关闭，不产生公网流量。
+
 ### 9.10 告警接口
 
 | 路径 | 方法 | 说明 |

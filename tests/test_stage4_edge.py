@@ -64,9 +64,10 @@ class Stage4EdgeTests(unittest.TestCase):
         self.assertIn("@app.route('/api/offline_events/ack', methods=['POST'])", source)
         self.assertIn("@app.route('/api/offline_events/sync', methods=['POST'])", source)
         self.assertIn("AGRIVISION_EVENTS_SINK_URL", source)
-        self.assertIn("Idempotency-Key", source)
         self.assertIn("offline_event_sync_lock", source)
         self.assertIn("if not isinstance(params, dict):", source)
+        transport_source = (ROOT / "system_b" / "core" / "event_transport.py").read_text(encoding="utf-8")
+        self.assertIn("Idempotency-Key", transport_source)
 
     def test_sink_url_rejects_unsafe_or_ambiguous_destinations(self):
         from event_transport import validate_sink_url

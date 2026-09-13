@@ -135,7 +135,7 @@ from health import build_service_health, summarize_camera
 from observability import resolve_request_id
 from event_schema import build_detection_event
 from offline_cache import OfflineEventCache
-from event_transport import EventTransport, build_batch_idempotency_key
+from event_transport import EventTransport, send_events_http
 
 # 创建 Flask 应用实例
 app = Flask(__name__)
@@ -177,17 +177,6 @@ DATASET_DIR = os.path.join(BASE_DIR, "dataset", "images")
 OFFLINE_EVENTS_DIR = os.path.join(BASE_DIR, "offline_events")
 offline_event_cache = OfflineEventCache(OFFLINE_EVENTS_DIR)
 EVENTS_SINK_URL = os.environ.get("AGRIVISION_EVENTS_SINK_URL", "").strip()
-
-
-def send_events_http(url, events):
-    """Send a bounded, privacy-safe event batch to the configured sink."""
-    response = requests.post(
-        url,
-        json={"schema_version": 1, "events": events},
-        headers={"Idempotency-Key": build_batch_idempotency_key(events)},
-        timeout=10,
-    )
-    return response.status_code
 
 
 event_transport = None

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import requests
 from time import sleep
 from urllib.parse import urlparse
 
@@ -33,6 +34,17 @@ def build_batch_idempotency_key(events):
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(serialized).hexdigest()
+
+
+def send_events_http(url, events):
+    """Send one privacy-safe event batch over HTTP(S)."""
+    response = requests.post(
+        url,
+        json={"schema_version": 1, "events": events},
+        headers={"Idempotency-Key": build_batch_idempotency_key(events)},
+        timeout=10,
+    )
+    return response.status_code
 
 
 class EventTransport:
