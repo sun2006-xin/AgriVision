@@ -69,11 +69,11 @@ AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实�
 - 已用临时 `127.0.0.1` HTTP 服务验证请求路径、版本化 JSON、幂等键和 202 成功后的队列删除。
 - 该验收仍不等价于公网 HTTPS、认证、反向代理、MQTT broker 或真实 ESP32 网络恢复；这些保留为部署阶段验收项。
 
-## 阶段 8：开源发布 CI 门禁（已完成基础项）
+## 阶段 8：开源发布 CI 门禁（已完成）
 
 - 已增加轻量 GitHub Actions 工作流，使用不含模型/设备配置的测试依赖运行全量 unittest、Python AST 校验和跟踪文件隐私扫描。
 - 已将公开发布扫描脚本固化为 `tools/validate_public_repo.py`，扫描凭据、RTSP 账号密码和常见私有网段，避免仅依赖人工检查。
-- CI 不下载模型、不访问摄像头、不连接外部事件接收端；真实 GitHub Runner 结果需在分支推送后由 Actions 页面确认。
+- CI 不下载模型、不访问摄像头、不连接外部事件接收端；GitHub Actions 已对提交 `1c68338` 返回 `completed / success`。
 
 ## 发布规则
 
