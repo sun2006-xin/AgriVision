@@ -690,6 +690,8 @@ System B 会把检测摘要写入本地有界队列 `offline_events/`，用于�
 
 `tests/test_stage23_mqtt_tls_local.py` 进一步使用临时自签名 CA 和 TLS broker 验证 `mqtts://`、`ca_certs`、TLS 握手、QoS 1 发布和确认。证书只存在测试临时目录；公网证书链、认证、ACL、证书轮换和 ESP32 链路仍需单独验收。
 
+`tests/test_stage24_mqtt_auth_local.py` 在同样的回环 TLS broker 上验证独立 username/password 注入；正确凭据可以发布，错误凭据会被 CONNACK 拒绝，不会发布事件。运行时会检查 MQTT v5 `ReasonCode`，认证失败统一返回不泄露配置的连接错误。
+
 MQTT broker 地址应通过 `mqtt_config.validate_broker_url` 校验：远端使用 `mqtts://host:8883`，本机开发可使用 `mqtt://127.0.0.1:1883`。不要把账号、密码或路径写入 URL；自动调度启用后才会在首次发送时建立 broker 连接。
 
 如需接入 Paho，可安装 `requirements-mqtt.txt`，调用 `mqtt_runtime.create_paho_transport(...)` 获取传输器和 `close` 回调。broker URL、topic、client ID 和凭据应从部署环境注入；函数不会在模块导入时连接。关闭服务前应调用 `close`，以停止 Paho 网络循环。当前仓库只用假客户端测试该生命周期，未提供真实 broker 凭据。

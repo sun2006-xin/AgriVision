@@ -222,6 +222,8 @@ HTTP sink 返回 4xx 时不会继续重试，返回 5xx 或网络异常时才进
 
 MQTT TLS 本机回归由 `tests/test_stage23_mqtt_tls_local.py` 使用临时 CA 和回环 TLS broker 完成，验证范围包括 `mqtts://`、CA 校验、MQTT v5 CONNECT、QoS 1 和队列确认；不包含公网证书链、认证或设备现场链路。
 
+MQTT 认证本机回归由 `tests/test_stage24_mqtt_auth_local.py` 使用合成凭据验证独立 username/password 注入和认证失败 CONNACK；运行时不把凭据放入 URL 或错误响应，公网认证与 ACL 仍需部署验收。
+
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
 ### 3.6 启动方式

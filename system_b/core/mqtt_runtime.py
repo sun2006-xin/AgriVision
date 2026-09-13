@@ -1,6 +1,7 @@
 """Optional Paho MQTT runtime; no broker connection occurs at import time."""
 
 import re
+import threading
 from time import sleep
 from urllib.parse import urlparse
 
@@ -62,16 +63,60 @@ def create_paho_transport(
         client.tls_set(ca_certs=ca_certs)
 
     port = parsed.port or (8883 if parsed.scheme == "mqtts" else 1883)
+    loop_started = False
+    connection_event = threading.Event()
+    connection_failure = []
+
+    def on_connect(_client, _userdata, _flags, reason_code, _properties):
+        failure = getattr(reason_code, "is_failure", None)
+        if failure is None:
+            try:
+                failure = int(reason_code) != int(mqtt.MQTT_ERR_SUCCESS)
+            except (TypeError, ValueError):
+                failure = str(reason_code).lower() not in {"0", "success"}
+        if failure:
+            connection_failure.append(True)
+        connection_event.set()
+
+    validate_connack = username is not None and hasattr(client, "is_connected")
+    if validate_connack:
+        client.on_connect = on_connect
     for attempt in range(1, connect_attempts + 1):
         try:
-            client.connect(parsed.hostname, port, 30)
+            if validate_connack:
+                connection_event.clear()
+                connection_failure.clear()
+            connection_result = client.connect(parsed.hostname, port, 30)
+            if connection_result is not None and int(connection_result) != int(mqtt.MQTT_ERR_SUCCESS):
+                raise RuntimeError("MQTT broker rejected connection")
+            if validate_connack:
+                reconnect_on_failure = getattr(client, "reconnect_on_failure", True)
+                client.reconnect_on_failure = False
+                client.loop_start()
+                loop_started = True
+                if not connection_event.wait(0.5) or connection_failure:
+                    raise RuntimeError("MQTT broker rejected connection")
+                client.reconnect_on_failure = reconnect_on_failure
             break
         except Exception as error:
             if attempt == connect_attempts:
+                try:
+                    client.disconnect()
+                except Exception:
+                    pass
+                try:
+                    client.loop_stop()
+                except Exception:
+                    pass
+                try:
+                    client.reinitialise()
+                except Exception:
+                    pass
                 raise RuntimeError("MQTT broker connection failed") from error
             if connect_backoff_seconds:
                 sleep(connect_backoff_seconds * attempt)
-    client.loop_start()
+    if not loop_started:
+        client.loop_start()
 
     def publisher(publish_topic, payload, qos, retain):
         info = client.publish(publish_topic, payload, qos=qos, retain=retain)
