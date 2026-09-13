@@ -164,8 +164,21 @@ def create_paho_transport(
         info.wait_for_publish(timeout=publish_timeout)
         return bool(info.is_published())
 
+    closed = False
+
     def close():
-        client.disconnect()
-        client.loop_stop()
+        nonlocal closed
+        if closed:
+            return
+        closed = True
+        try:
+            client.disconnect()
+        except Exception:
+            pass
+        finally:
+            try:
+                client.loop_stop()
+            except Exception:
+                pass
 
     return MqttEventTransport(topic, publisher, max_attempts, backoff_seconds), close
