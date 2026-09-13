@@ -139,6 +139,7 @@ from offline_cache import OfflineEventCache
 from event_transport import EventTransport, send_events_http
 from mqtt_runtime import create_paho_transport
 from event_scheduler import EventSyncScheduler
+from event_sync_status import EventSyncStatus
 
 # 创建 Flask 应用实例
 app = Flask(__name__)
@@ -223,6 +224,7 @@ if EVENTS_SINK_URL:
 mqtt_transport = None
 mqtt_close = None
 event_sync_scheduler = None
+event_sync_status = EventSyncStatus()
 
 
 def get_mqtt_transport():
@@ -252,18 +254,32 @@ def close_mqtt_runtime():
 def sync_offline_events_once():
     """Sync one bounded batch for the opt-in background scheduler."""
     if not offline_event_sync_lock.acquire(blocking=False):
+        event_sync_status.record("skipped", "none", len(offline_event_cache.list_pending()))
         return {"sent": 0, "skipped": "sync already running"}
     try:
+        transport_name = "mqtt" if MQTT_BROKER_URL else "http" if event_transport is not None else "none"
         events = offline_event_cache.list_pending()[:EVENTS_SYNC_LIMIT]
         if not events:
+            event_sync_status.record("empty", transport_name, 0)
             return {"sent": 0, "acked": 0, "pending": 0}
         transport = get_mqtt_transport() if MQTT_BROKER_URL else event_transport
         if transport is None:
+            event_sync_status.record("skipped", "none", len(events))
             return {"sent": 0, "acked": 0, "pending": len(events)}
         result = transport.sync(events, offline_event_cache.ack)
-        return {**result, "pending": len(offline_event_cache.list_pending())}
+        pending = len(offline_event_cache.list_pending())
+        outcome = "success" if result["sent"] == len(events) else "failure"
+        event_sync_status.record(
+            outcome,
+            transport_name,
+            pending,
+            sent=result.get("sent", 0),
+            acked=result.get("acked", 0),
+        )
+        return {**result, "pending": pending}
     except Exception:
         logger.exception("automatic offline event sync failed")
+        event_sync_status.record("failure", transport_name, len(offline_event_cache.list_pending()))
         return {"sent": 0, "acked": 0, "error": "sync failed"}
     finally:
         offline_event_sync_lock.release()
@@ -2548,6 +2564,20 @@ def api_offline_events_sync_mqtt():
         })
     finally:
         offline_event_sync_lock.release()
+
+
+@app.route('/api/offline_events/sync_status')
+def api_offline_events_sync_status():
+    """Return safe operational state for the opt-in background event sync."""
+    transport_name = "mqtt" if MQTT_BROKER_URL else "http" if event_transport is not None else "none"
+    enabled = EVENTS_SYNC_INTERVAL > 0 and transport_name != "none"
+    return jsonify(event_sync_status.snapshot(
+        enabled=enabled,
+        interval_seconds=EVENTS_SYNC_INTERVAL,
+        transport=transport_name,
+        running=event_sync_scheduler.running if event_sync_scheduler is not None else False,
+        pending=len(offline_event_cache.list_pending()),
+    ))
 
 
 # ---------- 8. MJPEG 视频流接口 ----------

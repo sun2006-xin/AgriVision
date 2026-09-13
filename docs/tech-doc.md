@@ -214,6 +214,7 @@ ESP32-CAM -> fetch_image() -> run_detection_once()
 | GET | /api/sync_status | 同步状态 |
 | POST | /api/offline_events/sync | 手动发送有界离线事件批次；2xx 后确认删除 |
 | POST | /api/offline_events/sync_mqtt | 手动通过可选 MQTT 运行时发送有界批次；2xx 后确认删除 |
+| GET | /api/offline_events/sync_status | 查看脱敏的自动同步运行状态与计数 |
 
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 

@@ -668,6 +668,7 @@ System B 会把检测摘要写入本地有界队列 `offline_events/`，用于�
 | `/api/offline_events` | GET | 返回待同步事件及数量 |
 | `/api/offline_events/ack` | POST | 外部传输成功后按 `event_id` 确认删除 |
 | `/api/offline_events/sync` | POST | 手动发送有界批次；仅在传输返回 2xx 后确认删除 |
+| `/api/offline_events/sync_status` | GET | 返回脱敏的自动同步状态、队列数量和固定计数 |
 
 如需显式启用 HTTP 同步，请设置环境变量 `AGRIVISION_EVENTS_SINK_URL`。远端地址必须使用 HTTPS；仅允许 `localhost`、`127.0.0.1` 或 `::1` 使用 HTTP。服务默认不自动外发，避免部署时因误配置产生数据流出。每次请求携带由有序事件批次生成的 `Idempotency-Key`，接收端应按该键或事件 `event_id` 去重。
 
@@ -698,6 +699,8 @@ System B 的 `/api/offline_events/sync_mqtt` 是手动入口，不会在启动�
 ### 9.9.4 自动同步配置
 
 自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后，服务启动时会创建可停止的后台调度线程；设置为 `0` 或不设置则不自动外发。每轮最多同步 `AGRIVISION_EVENTS_SYNC_LIMIT` 条事件（默认 50，范围 1–100），优先使用完整 MQTT 配置，否则使用 `AGRIVISION_EVENTS_SINK_URL` 的 HTTP sink。同步失败不会删除本地事件，后台异常也不会终止调度线程。
+
+通过 `/api/offline_events/sync_status` 可查看 `enabled`、`running`、`pending`、成功/失败批次数、发送/确认事件数和 UTC 时间戳。接口不会返回 broker 地址、账号、密码、异常原文或事件正文；`last_error` 只会返回固定的 `sync failed`。
 
 ### 9.10 告警接口
 
