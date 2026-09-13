@@ -62,6 +62,34 @@ class Stage4EdgeTests(unittest.TestCase):
         source = (ROOT / "system_b" / "core" / "app.py").read_text(encoding="utf-8")
         self.assertIn("offline_event_cache.put(build_detection_event(camera_id, stable_result))", source)
         self.assertIn("@app.route('/api/offline_events/ack', methods=['POST'])", source)
+        self.assertIn("@app.route('/api/offline_events/sync', methods=['POST'])", source)
+        self.assertIn("AGRIVISION_EVENTS_SINK_URL", source)
+
+    def test_sink_url_rejects_unsafe_or_ambiguous_destinations(self):
+        from event_transport import validate_sink_url
+
+        self.assertEqual(validate_sink_url("http://127.0.0.1:9100/events"), "http://127.0.0.1:9100/events")
+        with self.assertRaises(ValueError):
+            validate_sink_url("http://example.com/events")
+        with self.assertRaises(ValueError):
+            validate_sink_url("https://user:password@example.com/events")
+
+    def test_transport_retries_and_acknowledges_only_after_success(self):
+        from event_transport import EventTransport
+
+        attempts = []
+        acknowledged = []
+
+        def sender(url, events):
+            attempts.append((url, events))
+            if len(attempts) < 3:
+                raise OSError("offline")
+            return 202
+
+        transport = EventTransport("http://127.0.0.1:9100/events", sender, max_attempts=3)
+        result = transport.sync([{"event_id": "event-1"}], acknowledged.append)
+        self.assertEqual(result, {"sent": 1, "attempts": 3})
+        self.assertEqual(acknowledged, ["event-1"])
 
 
 if __name__ == "__main__":

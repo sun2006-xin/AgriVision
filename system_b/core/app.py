@@ -135,6 +135,7 @@ from health import build_service_health, summarize_camera
 from observability import resolve_request_id
 from event_schema import build_detection_event
 from offline_cache import OfflineEventCache
+from event_transport import EventTransport
 
 # 创建 Flask 应用实例
 app = Flask(__name__)
@@ -175,6 +176,25 @@ SD_SYNC_INTERVAL = 300
 DATASET_DIR = os.path.join(BASE_DIR, "dataset", "images")
 OFFLINE_EVENTS_DIR = os.path.join(BASE_DIR, "offline_events")
 offline_event_cache = OfflineEventCache(OFFLINE_EVENTS_DIR)
+EVENTS_SINK_URL = os.environ.get("AGRIVISION_EVENTS_SINK_URL", "").strip()
+
+
+def send_events_http(url, events):
+    """Send a bounded, privacy-safe event batch to the configured sink."""
+    response = requests.post(
+        url,
+        json={"schema_version": 1, "events": events},
+        timeout=10,
+    )
+    return response.status_code
+
+
+event_transport = None
+if EVENTS_SINK_URL:
+    try:
+        event_transport = EventTransport(EVENTS_SINK_URL, send_events_http)
+    except ValueError as error:
+        logger.warning("event_sink_config_invalid error=%s", error)
 
 # 异常图片保存间隔（秒）：当检测到"注意"及以上等级时，每隔此时间保存一张标注图到 detection_logs/
 SAVE_INTERVAL = 60
@@ -2378,6 +2398,27 @@ def api_offline_events_ack():
     except ValueError as error:
         return jsonify({"success": False, "error": str(error)}), 400
     return jsonify({"success": True})
+
+
+@app.route('/api/offline_events/sync', methods=['POST'])
+def api_offline_events_sync():
+    """Manually sync a bounded batch; remove events only after 2xx delivery."""
+    if event_transport is None:
+        return jsonify({"success": False, "error": "event sink is not configured"}), 503
+
+    params = request.get_json(silent=True) or {}
+    limit = params.get("limit", 50)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+        return jsonify({"success": False, "error": "limit must be an integer from 1 to 100"}), 400
+
+    events = offline_event_cache.list_pending()[:limit]
+    result = event_transport.sync(events, offline_event_cache.ack)
+    pending = len(offline_event_cache.list_pending())
+    return jsonify({
+        "success": result["sent"] == len(events),
+        "pending": pending,
+        **result,
+    })
 
 
 # ---------- 8. MJPEG 视频流接口 ----------

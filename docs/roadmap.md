@@ -45,8 +45,9 @@ AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实�
 
 - 已新增版本化、隐私安全的检测事件 envelope，事件只包含摄像头 ID 和检测摘要。
 - 已新增有界离线 JSON 队列，支持原子写入、容量限制、待同步读取和传输确认删除。
-- 已在 System B 检测流程接入离线事件队列，并提供 `/api/offline_events` 与 `/api/offline_events/ack`。
-- 尚未接入 MQTT/HTTP 传输器、断点续传和真实 ESP32 断网恢复联调；这些必须在下一小迭代中用仿真设备和现场日志验收。
+- 已在 System B 检测流程接入离线事件队列，并提供 `/api/offline_events`、`/api/offline_events/ack`。
+- 已增加手动 `/api/offline_events/sync` HTTP 同步入口：通过 `AGRIVISION_EVENTS_SINK_URL` 显式启用，仅允许 HTTPS 远端或本机 HTTP，并在 2xx 成功后确认删除事件。
+- MQTT、断点续传和真实 ESP32 断网恢复联调仍未完成；这些必须用仿真设备和现场日志验收。
 - 量化模型、边缘推理、Docker/服务管理部署列为后续工作。
 
 ## 发布规则
