@@ -87,6 +87,12 @@ AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实�
 - 运行记录：[Public quality gate #3](https://github.com/sun2006-xin/AgriVision/actions/runs/34762437681)。
 - 该证据仍只覆盖软件契约，不覆盖真实 broker、TLS/认证或 ESP32 现场链路。
 
+## 阶段 12：MQTT 连接安全边界（已完成基础项）
+
+- 已增加 broker URL 校验：远端只允许 `mqtts://`，本机开发才允许 `mqtt://`。
+- 已拒绝 URL 内嵌账号/密码、路径、查询参数、片段和非法端口，凭据必须通过独立安全配置注入。
+- 真实 TLS 证书校验、认证、broker 连接和 ESP32 现场联调仍未验收。
+
 ## 发布规则
 
 每个阶段单独建立分支、完成测试和隐私扫描后提交并推送；模型缓存、数据库、摄像头地址、Webhook 和本地日志不得进入公开提交。

@@ -685,6 +685,8 @@ System B 会把检测摘要写入本地有界队列 `offline_events/`，用于�
 
 该契约测试已在 GitHub Actions 干净 Runner 上通过；请将其视为软件回归证据，不要替代真实 broker 和设备现场验收。
 
+MQTT broker 地址应通过 `mqtt_config.validate_broker_url` 校验：远端使用 `mqtts://host:8883`，本机开发可使用 `mqtt://127.0.0.1:1883`。不要把账号、密码或路径写入 URL；当前版本尚未自动建立 broker 连接。
+
 ### 9.10 告警接口
 
 | 路径 | 方法 | 说明 |
