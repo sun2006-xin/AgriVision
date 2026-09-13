@@ -226,6 +226,12 @@ AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实�
 - 真实 Chromium smoke 已验证首页加载、事件状态节点存在、状态接口失败时显示固定提示，且实时监控主状态节点仍可用。
 - 浏览器验证仅覆盖本机页面故障隔离，不代表公网 broker、ACL、证书轮换或 ESP32 现场链路验收。
 
+## 阶段 35：公开 CI 浏览器质量门禁（本机已完成）
+
+- 在 GitHub Actions 增加独立 `browser-smoke` job：安装可选 UI 依赖和 Chromium，启动本地 System B 后运行状态面板 smoke。
+- 通过有限探活、15 分钟 job 超时和 `always()` 清理保证服务生命周期受控；浏览器使用低资源参数兼容 CI runner。
+- 本机已复现并修复 Chromium 资源启动失败，随后 smoke 通过；CI 云端最终结果需以推送后的 GitHub Actions 运行记录为准。
+
 ## 发布规则
 
 每个阶段单独建立分支、完成测试和隐私扫描后提交并推送；模型缓存、数据库、摄像头地址、Webhook 和本地日志不得进入公开提交。

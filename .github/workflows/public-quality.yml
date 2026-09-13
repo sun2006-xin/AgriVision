@@ -28,3 +28,31 @@ jobs:
         run: python -c "import ast,pathlib; fs=[p for r in ('system_a/core','system_b/core','tests','tools') for p in pathlib.Path(r).rglob('*.py') if '.venv' not in p.parts]; [ast.parse(p.read_text(encoding='utf-8'),filename=str(p)) for p in fs]; print(f'AST_OK {len(fs)} files')"
       - name: Scan tracked files for public-release violations
         run: python tools/validate_public_repo.py
+
+  browser-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install lightweight test dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-test.txt
+      - name: Install browser smoke dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-ui-test.txt
+      - name: Install Chromium
+        run: python -m playwright install chromium
+      - name: Start System B
+        run: |
+          python system_b/core/app.py > system-b.log 2>&1 &
+          echo $! > system-b.pid
+          curl --fail --retry 30 --retry-delay 1 --retry-connrefused http://127.0.0.1:5000/ -o /dev/null
+      - name: Run browser smoke
+        run: python tools/browser_smoke_event_status.py
+      - name: Stop System B
+        if: always()
+        run: |
+          if [ -f system-b.pid ]; then kill "$(cat system-b.pid)" || true; fi
