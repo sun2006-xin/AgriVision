@@ -216,6 +216,8 @@ ESP32-CAM -> fetch_image() -> run_detection_once()
 | POST | /api/offline_events/sync_mqtt | 手动通过可选 MQTT 运行时发送有界批次；2xx 后确认删除 |
 | GET | /api/offline_events/sync_status | 查看脱敏的自动同步运行状态与计数 |
 
+离线事件同步使用 `system_b/core/process_sync_lock.py` 在同一主机上建立 SQLite 非阻塞互斥，避免多个 Flask worker 同时消费同一批事件。锁数据库位于被 Git 忽略的 `system_b/core/offline_events/` 运行目录；跨主机、多容器部署仍需外部协调机制。
+
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
 ### 3.6 启动方式

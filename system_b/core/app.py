@@ -140,6 +140,7 @@ from event_transport import EventTransport, send_events_http
 from mqtt_runtime import create_paho_transport
 from event_scheduler import EventSyncScheduler
 from event_sync_status import EventSyncStatus
+from process_sync_lock import ProcessSyncLock
 
 # 创建 Flask 应用实例
 app = Flask(__name__)
@@ -180,6 +181,7 @@ SD_SYNC_INTERVAL = 300
 DATASET_DIR = os.path.join(BASE_DIR, "dataset", "images")
 OFFLINE_EVENTS_DIR = os.path.join(BASE_DIR, "offline_events")
 offline_event_cache = OfflineEventCache(OFFLINE_EVENTS_DIR)
+offline_event_sync_lock = ProcessSyncLock(os.path.join(OFFLINE_EVENTS_DIR, ".sync-lock.db"))
 EVENTS_SINK_URL = os.environ.get("AGRIVISION_EVENTS_SINK_URL", "").strip()
 MQTT_BROKER_URL = os.environ.get("AGRIVISION_MQTT_BROKER_URL", "").strip()
 MQTT_TOPIC = os.environ.get("AGRIVISION_MQTT_TOPIC", "").strip()
@@ -214,7 +216,6 @@ EVENTS_SYNC_LIMIT = _read_bounded_int("AGRIVISION_EVENTS_SYNC_LIMIT", 50, 1, 100
 
 
 event_transport = None
-offline_event_sync_lock = threading.Lock()
 if EVENTS_SINK_URL:
     try:
         event_transport = EventTransport(EVENTS_SINK_URL, send_events_http)
