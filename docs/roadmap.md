@@ -81,6 +81,12 @@ AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实�
 - 已验证发布失败后的有限重试，以及仅在发布器明确返回成功后确认本地事件。
 - 当前不自动连接 broker，也未写入任何 broker 地址、账号或密码；真实 MQTT 客户端、TLS、认证和设备联调仍需单独配置并验收。
 
+## 阶段 11：MQTT 契约云端回归（已完成）
+
+- GitHub Actions 已对阶段 10 提交 `de89384` 返回 `completed / success`，确认 MQTT 契约测试在干净 Runner 上可复现。
+- 运行记录：[Public quality gate #3](https://github.com/sun2006-xin/AgriVision/actions/runs/34762437681)。
+- 该证据仍只覆盖软件契约，不覆盖真实 broker、TLS/认证或 ESP32 现场链路。
+
 ## 发布规则
 
 每个阶段单独建立分支、完成测试和隐私扫描后提交并推送；模型缓存、数据库、摄像头地址、Webhook 和本地日志不得进入公开提交。

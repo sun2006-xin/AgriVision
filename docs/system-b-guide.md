@@ -683,6 +683,8 @@ System B 会把检测摘要写入本地有界队列 `offline_events/`，用于�
 
 `event_mqtt.MqttEventTransport` 是注入式 MQTT 适配层：调用方提供发布器，适配层负责具体主题校验、版本化批次载荷、QoS 1、`retain=False`、有限重试和成功后确认。当前版本不自动建立 broker 连接；接入真实客户端前必须补充 TLS/认证配置、接收端幂等处理和设备现场日志。
 
+该契约测试已在 GitHub Actions 干净 Runner 上通过；请将其视为软件回归证据，不要替代真实 broker 和设备现场验收。
+
 ### 9.10 告警接口
 
 | 路径 | 方法 | 说明 |
