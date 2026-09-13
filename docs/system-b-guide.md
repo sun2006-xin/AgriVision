@@ -659,6 +659,17 @@ ESP32-CAM 固件提供以下 HTTP 端点供 System B 调用：
 | `/api/sync_now` | GET | `camera_id` | 手动触发 SD 同步 |
 | `/api/sync_status` | GET | - | 查询同步进度 |
 
+### 9.9.1 离线事件队列
+
+System B 会把检测摘要写入本地有界队列 `offline_events/`，用于网络恢复后的传输器消费。队列不保存图像、摄像头 URL、Webhook 或凭据；达到条数/字节上限时会淘汰最旧事件。
+
+| 路径 | 方法 | 说明 |
+|------|------|------|
+| `/api/offline_events` | GET | 返回待同步事件及数量 |
+| `/api/offline_events/ack` | POST | 外部传输成功后按 `event_id` 确认删除 |
+
+当前版本只提供本地队列和确认接口，尚未内置 MQTT/HTTP 传输器。
+
 ### 9.10 告警接口
 
 | 路径 | 方法 | 说明 |

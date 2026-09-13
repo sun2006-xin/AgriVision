@@ -47,5 +47,6 @@ desktop.ini
 
 # Runtime data and local caches
 system_b/core/dataset/
+system_b/core/offline_events/
 system_b/core/config/*.local.json
 .codex-health/

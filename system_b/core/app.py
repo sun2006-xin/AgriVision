@@ -133,6 +133,8 @@ from dual_verifier import DualVerifier                  # 双引擎验证融合�
 from alert_notifier import get_notifier                 # 智能告警通知器
 from health import build_service_health, summarize_camera
 from observability import resolve_request_id
+from event_schema import build_detection_event
+from offline_cache import OfflineEventCache
 
 # 创建 Flask 应用实例
 app = Flask(__name__)
@@ -171,6 +173,8 @@ SD_SYNC_INTERVAL = 300
 # 本地数据集图片存储目录，从 ESP32 SD 卡同步下来的图片保存在此处
 # 路径: 项目根目录/dataset/images/
 DATASET_DIR = os.path.join(BASE_DIR, "dataset", "images")
+OFFLINE_EVENTS_DIR = os.path.join(BASE_DIR, "offline_events")
+offline_event_cache = OfflineEventCache(OFFLINE_EVENTS_DIR)
 
 # 异常图片保存间隔（秒）：当检测到"注意"及以上等级时，每隔此时间保存一张标注图到 detection_logs/
 SAVE_INTERVAL = 60
@@ -439,6 +443,13 @@ def run_detection_once(camera_id=None):
             "white_ratio": avg_white_ratio,
             "green_ratio": avg_green_ratio,
         }
+
+        # 将检测摘要写入有界离线队列，供网络恢复后的传输器消费。
+        # 队列只保存事件摘要，不保存图像、URL 或通知配置。
+        try:
+            offline_event_cache.put(build_detection_event(camera_id, stable_result))
+        except (TypeError, ValueError, OSError) as cache_error:
+            logger.warning("offline_event_enqueue_failed event=offline_event_enqueue_failed error=%s", cache_error)
 
         # 将标注后的图像编码为 JPEG 字节流
         _, buf = cv2.imencode('.jpg', annotated)
@@ -2348,6 +2359,25 @@ def api_sync_now():
 def api_sync_status():
     with sd_lock:
         return jsonify(sd_sync_info.copy())
+
+
+@app.route('/api/offline_events')
+def api_offline_events():
+    """Return bounded detection events waiting for a future transport worker."""
+    events = offline_event_cache.list_pending()
+    return jsonify({"count": len(events), "events": events})
+
+
+@app.route('/api/offline_events/ack', methods=['POST'])
+def api_offline_events_ack():
+    """Acknowledge one event after an external transport confirms delivery."""
+    params = request.get_json(silent=True) or {}
+    event_id = params.get("event_id")
+    try:
+        offline_event_cache.ack(event_id)
+    except ValueError as error:
+        return jsonify({"success": False, "error": str(error)}), 400
+    return jsonify({"success": True})
 
 
 # ---------- 8. MJPEG 视频流接口 ----------

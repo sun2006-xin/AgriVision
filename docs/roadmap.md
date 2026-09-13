@@ -41,11 +41,13 @@ AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实�
 
 运行：`python system_a/core/evaluate_predictions.py path/to/predictions.json`。
 
-## 阶段 4：边缘部署与可扩展集成
+## 阶段 4：边缘部署与可扩展集成（离线队列基础已完成）
 
-- 评估量化模型、边缘推理和断网缓存。
-- 统一摄像头、事件、告警和诊断任务的数据协议。
-- 提供 Docker/服务管理部署方式，并补充隐私与模型授权说明。
+- 已新增版本化、隐私安全的检测事件 envelope，事件只包含摄像头 ID 和检测摘要。
+- 已新增有界离线 JSON 队列，支持原子写入、容量限制、待同步读取和传输确认删除。
+- 已在 System B 检测流程接入离线事件队列，并提供 `/api/offline_events` 与 `/api/offline_events/ack`。
+- 尚未接入 MQTT/HTTP 传输器、断点续传和真实 ESP32 断网恢复联调；这些必须在下一小迭代中用仿真设备和现场日志验收。
+- 量化模型、边缘推理、Docker/服务管理部署列为后续工作。
 
 ## 发布规则
 
