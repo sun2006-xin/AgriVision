@@ -238,6 +238,8 @@ MQTT 发布器将 Paho `RuntimeError` 与其他发布失败统一纳入有界重
 
 `/api/offline_events/sync_status` 在 MQTT 启用时额外报告当前生效的 `mqtt_connack_timeout_seconds` 和 `mqtt_publish_timeout_seconds` 数值；未启用 MQTT 时为 `null`。状态接口不返回 broker URL、username、password 或异常文本。阶段 31 的回归位于 `tests/test_stage31_mqtt_status_configuration.py`。
 
+实时监控页的事件同步摘要通过该脱敏接口显示传输类型、队列数量、成功/失败批次数和超时数值。前端使用固定字段与 `textContent` 渲染，避免把运行时配置或异常文本注入页面；阶段 32 的回归位于 `tests/test_stage32_mqtt_status_panel.py`。
+
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
 ### 3.6 启动方式

@@ -1027,6 +1027,7 @@ canvas { width: 100% !important; }
 .sync-progress { font-size: 13px; color: #4fc3f7; margin-bottom: 8px; min-height: 18px; }
 .sync-progress.error { color: #ff5252; }
 .sync-progress.done { color: #69f0ae; }
+.event-sync-info { font-size: 12px; color: #9ab7d4; margin: 8px 0 12px; min-height: 18px; }
 
 .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
 .gallery-item { border-radius: 8px; overflow: hidden; background: #0f3460; cursor: pointer; transition: transform 0.2s; }
@@ -1192,6 +1193,7 @@ canvas { width: 100% !important; }
       </div>
       <div class="sd-info" id="sdInfo">等待同步...</div>
       <div class="sync-progress" id="syncProgress"></div>
+      <div class="event-sync-info" id="eventSyncInfo">事件同步状态加载中...</div>
       <div class="gallery-grid" id="galleryGrid">
         <div class="gallery-empty">正在加载...</div>
       </div>
@@ -1388,6 +1390,16 @@ function switchTab(tabId) {
   }
 }
 
+function formatEventSyncStatus(data) {
+  var transport = data.transport || 'none';
+  var pending = Number.isFinite(data.pending) ? data.pending : 0;
+  var succeeded = Number.isFinite(data.batches_succeeded) ? data.batches_succeeded : 0;
+  var failed = Number.isFinite(data.batches_failed) ? data.batches_failed : 0;
+  var connack = Number.isFinite(data.mqtt_connack_timeout_seconds) ? data.mqtt_connack_timeout_seconds.toFixed(1) + 's' : '-';
+  var publish = Number.isFinite(data.mqtt_publish_timeout_seconds) ? data.mqtt_publish_timeout_seconds.toFixed(1) + 's' : '-';
+  return '事件同步: ' + transport + ' | 待发送 ' + pending + ' | 成功 ' + succeeded + ' | 失败 ' + failed + ' | 握手/发布确认超时 ' + connack + '/' + publish;
+}
+
 async function updateStatus() {
   try {
     const data = await (await fetch(apiURL('/api/dual_status'))).json();
@@ -1443,6 +1455,11 @@ async function updateStatus() {
         prog.textContent = '✅ ' + sd.sync_progress;
         prog.className = 'sync-progress done';
       }
+    }
+    const eventSyncResponse = await fetch('/api/offline_events/sync_status');
+    if (eventSyncResponse.ok) {
+      const eventSync = await eventSyncResponse.json();
+      document.getElementById('eventSyncInfo').textContent = formatEventSyncStatus(eventSync);
     }
     if (data.error) console.error(data.error);
   } catch(e) { console.error(e); }
