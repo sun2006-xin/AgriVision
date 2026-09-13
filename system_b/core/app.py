@@ -1400,6 +1400,19 @@ function formatEventSyncStatus(data) {
   return '事件同步: ' + transport + ' | 待发送 ' + pending + ' | 成功 ' + succeeded + ' | 失败 ' + failed + ' | 握手/发布确认超时 ' + connack + '/' + publish;
 }
 
+async function loadEventSyncStatus() {
+  var target = document.getElementById('eventSyncInfo');
+  if (!target) return;
+  try {
+    const response = await fetch('/api/offline_events/sync_status');
+    if (!response.ok) throw new Error('event sync status unavailable');
+    const data = await response.json();
+    target.textContent = formatEventSyncStatus(data);
+  } catch(e) {
+    target.textContent = '事件同步状态暂不可用';
+  }
+}
+
 async function updateStatus() {
   try {
     const data = await (await fetch(apiURL('/api/dual_status'))).json();
@@ -1456,11 +1469,7 @@ async function updateStatus() {
         prog.className = 'sync-progress done';
       }
     }
-    const eventSyncResponse = await fetch('/api/offline_events/sync_status');
-    if (eventSyncResponse.ok) {
-      const eventSync = await eventSyncResponse.json();
-      document.getElementById('eventSyncInfo').textContent = formatEventSyncStatus(eventSync);
-    }
+    loadEventSyncStatus();
     if (data.error) console.error(data.error);
   } catch(e) { console.error(e); }
 }
