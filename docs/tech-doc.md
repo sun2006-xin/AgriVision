@@ -242,6 +242,8 @@ MQTT 发布器将 Paho `RuntimeError` 与其他发布失败统一纳入有界重
 
 阶段 33 将事件状态请求封装为独立的 `loadEventSyncStatus()`，其失败只更新固定的“事件同步状态暂不可用”提示，不传播到实时监控主刷新流程，也不展示异常原文。回归位于 `tests/test_stage33_event_status_isolation.py`；浏览器自动化需在安装 Playwright 后补做。
 
+阶段 34 提供可选浏览器回归依赖 `requirements-ui-test.txt`。安装依赖和 Chromium 后，可在 System B 启动时运行 `python tools/browser_smoke_event_status.py`，验证状态接口失败不会破坏实时监控页面；该工具不读取 cookie、localStorage 或凭据。
+
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
 ### 3.6 启动方式

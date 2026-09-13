@@ -213,6 +213,8 @@ AgriVision/
 
 阶段 33 进一步隔离事件同步状态刷新故障：状态接口暂时不可用时，实时检测页面仍保持刷新，并仅显示固定的脱敏提示。
 
+阶段 34 已增加可选 Chromium smoke 测试入口，验证实时监控页在事件状态接口失败时仍可加载；浏览器测试依赖不会进入生产安装路径。
+
 公开发布门禁已在 GitHub Actions 对提交 `1c68338` 验证通过：[查看 CI 运行记录](https://github.com/sun2006-xin/AgriVision/actions/runs/34762246684)。
 
 MQTT 契约测试也已在 GitHub Actions 对提交 `de89384` 验证通过：[查看 MQTT CI 运行记录](https://github.com/sun2006-xin/AgriVision/actions/runs/34762437681)。这不代表真实 broker 或 ESP32 已完成联调。
