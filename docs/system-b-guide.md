@@ -693,6 +693,8 @@ MQTT broker 地址应通过 `mqtt_config.validate_broker_url` 校验：远端使
 
 System B 的 `/api/offline_events/sync_mqtt` 是手动入口，不会在启动时自动连接。配置 `AGRIVISION_MQTT_BROKER_URL`、`AGRIVISION_MQTT_TOPIC` 和 `AGRIVISION_MQTT_CLIENT_ID` 后，再按需通过请求体 `{"limit": 50}` 触发；用户名/密码使用独立环境变量注入，不能写入 URL。初始连接最多重试 5 次，未配置或最终连接失败时返回 503，响应不包含 broker 地址或凭据。
 
+连接建立后由 Paho 网络循环负责运行中重连；本地测试已模拟 broker 主动断开并验证恢复。生产部署仍需在真实网络条件下验证 TLS、认证、ACL、长时间抖动和设备恢复。
+
 ### 9.10 告警接口
 
 | 路径 | 方法 | 说明 |
