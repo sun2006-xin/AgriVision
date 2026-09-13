@@ -702,6 +702,8 @@ System B 的 `/api/offline_events/sync_mqtt` 是手动入口，不会在启动�
 
 通过 `/api/offline_events/sync_status` 可查看 `enabled`、`running`、`pending`、成功/失败批次数、发送/确认事件数和 UTC 时间戳。接口不会返回 broker 地址、账号、密码、异常原文或事件正文；`last_error` 只会返回固定的 `sync failed`。
 
+HTTP 同步对错误分类处理：4xx 返回会标记为 `permanent` 并停止重试；5xx、其他非 2xx 和网络异常最多按配置重试，耗尽后标记为 `retry_exhausted`。`/api/offline_events/sync_status` 的 `last_failure_type` 只会返回固定类别，不返回 HTTP 响应正文。
+
 ### 9.9.5 多进程部署边界
 
 System B 使用 `offline_events/.sync-lock.db` 的 SQLite `BEGIN IMMEDIATE` 作为同一主机上的非阻塞同步锁，手动接口和后台调度共用它。该文件属于运行时数据并已被 Git 忽略，不应复制到公开仓库。它不能替代跨主机、跨容器或多节点部署中的分布式锁；这类部署应由上层编排系统保证单一消费者，或另行接入经过认证的协调服务。

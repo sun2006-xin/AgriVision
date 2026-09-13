@@ -276,11 +276,17 @@ def sync_offline_events_once():
             pending,
             sent=result.get("sent", 0),
             acked=result.get("acked", 0),
+            failure_type=result.get("failure_type", "") if outcome == "failure" else "",
         )
         return {**result, "pending": pending}
     except Exception:
         logger.exception("automatic offline event sync failed")
-        event_sync_status.record("failure", transport_name, len(offline_event_cache.list_pending()))
+        event_sync_status.record(
+            "failure",
+            transport_name,
+            len(offline_event_cache.list_pending()),
+            failure_type="runtime",
+        )
         return {"sent": 0, "acked": 0, "error": "sync failed"}
     finally:
         offline_event_sync_lock.release()

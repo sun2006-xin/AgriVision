@@ -67,12 +67,15 @@ class EventTransport:
         for attempt in range(1, self.max_attempts + 1):
             try:
                 status_code = self.sender(self.sink_url, events)
-                if 200 <= int(status_code) < 300:
+                status_code = int(status_code)
+                if 200 <= status_code < 300:
                     for event in events:
                         acknowledge(event["event_id"])
                     return {"sent": len(events), "attempts": attempt}
+                if 400 <= status_code < 500:
+                    return {"sent": 0, "attempts": attempt, "failure_type": "permanent"}
             except (OSError, ValueError, TypeError):
                 pass
             if attempt < self.max_attempts and self.backoff_seconds:
                 sleep(self.backoff_seconds * attempt)
-        return {"sent": 0, "attempts": self.max_attempts}
+        return {"sent": 0, "attempts": self.max_attempts, "failure_type": "retry_exhausted"}

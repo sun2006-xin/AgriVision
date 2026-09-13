@@ -11,7 +11,7 @@ class Stage20SyncObservabilityTests(unittest.TestCase):
 
         self.assertIn("@app.route('/api/offline_events/sync_status')", source)
         self.assertIn("event_sync_status.snapshot", source)
-        self.assertIn('event_sync_status.record("failure"', source)
+        self.assertIn('failure_type="runtime"', source)
         self.assertNotIn('"broker_url"', source)
 
     def test_snapshot_has_safe_initial_state(self):
