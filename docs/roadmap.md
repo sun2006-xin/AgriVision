@@ -99,6 +99,12 @@ AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实�
 - 已实现独立凭据参数、TLS broker 连接、Paho 网络循环、QoS 发布完成等待和可关闭生命周期。
 - 已增加 `requirements-mqtt.txt`；本地使用假 Paho 客户端验证运行时流程，但真实 broker、TLS 证书链、认证和 ESP32 现场仍未验收。
 
+## 阶段 14：Paho 运行时云端回归（已完成）
+
+- GitHub Actions 已对提交 `4f33688` 返回 `completed / success`，确认可选 Paho 运行时代码和假客户端测试在干净 Runner 上通过。
+- 运行记录：[Public quality gate #6](https://github.com/sun2006-xin/AgriVision/actions/runs/34762728744)。
+- 真实 broker、TLS 证书链、认证和 ESP32 现场链路仍未验收。
+
 ## 发布规则
 
 每个阶段单独建立分支、完成测试和隐私扫描后提交并推送；模型缓存、数据库、摄像头地址、Webhook 和本地日志不得进入公开提交。
