@@ -78,7 +78,10 @@ def create_paho_transport(
             connection_failure.append(True)
         connection_event.set()
 
-    validate_connack = username is not None and hasattr(client, "is_connected")
+    # Real Paho clients expose ``is_connected``.  Validate CONNACK for every
+    # such client, including anonymous local-development connections; a
+    # successful TCP connect alone does not prove MQTT session acceptance.
+    validate_connack = hasattr(client, "is_connected")
     if validate_connack:
         client.on_connect = on_connect
     for attempt in range(1, connect_attempts + 1):
