@@ -230,6 +230,8 @@ MQTT 连接运行时对所有真实 Paho 客户端统一等待 MQTT v5 CONNACK�
 
 CONNACK 等待由 `connack_timeout` 控制，默认 5 秒，允许范围为 0.1–30 秒；System B 使用 `AGRIVISION_MQTT_CONNACK_TIMEOUT` 注入该值，超出范围或非数值配置回退到安全默认值，底层 API 仍会拒绝非法值。阶段 27 的参数、环境变量和实际等待值回归位于 `tests/test_stage27_mqtt_connack_timeout.py`。
 
+QoS 1 发布确认由 `publish_timeout` 控制，默认 10 秒，允许范围为 0.1–60 秒；System B 使用 `AGRIVISION_MQTT_PUBLISH_TIMEOUT` 注入。等待超时或 `is_published()` 为假时不会确认队列事件，阶段 28 的参数、环境变量和实际等待值回归位于 `tests/test_stage28_mqtt_publish_timeout.py`。
+
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
 ### 3.6 启动方式

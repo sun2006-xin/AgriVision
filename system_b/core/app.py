@@ -224,6 +224,7 @@ def _read_bounded_int(name, default, lower, upper):
 EVENTS_SYNC_INTERVAL = _read_nonnegative_float("AGRIVISION_EVENTS_SYNC_INTERVAL", 0)
 EVENTS_SYNC_LIMIT = _read_bounded_int("AGRIVISION_EVENTS_SYNC_LIMIT", 50, 1, 100)
 MQTT_CONNACK_TIMEOUT = _read_bounded_float("AGRIVISION_MQTT_CONNACK_TIMEOUT", 5.0, 0.1, 30.0)
+MQTT_PUBLISH_TIMEOUT = _read_bounded_float("AGRIVISION_MQTT_PUBLISH_TIMEOUT", 10.0, 0.1, 60.0)
 
 
 event_transport = None
@@ -254,6 +255,7 @@ def get_mqtt_transport():
         password=MQTT_PASSWORD,
         ca_certs=MQTT_CA_CERTS,
         connack_timeout=MQTT_CONNACK_TIMEOUT,
+        publish_timeout=MQTT_PUBLISH_TIMEOUT,
     )
     return mqtt_transport
 

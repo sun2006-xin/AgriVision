@@ -30,6 +30,7 @@ def create_paho_transport(
     connect_attempts=3,
     connect_backoff_seconds=0.5,
     connack_timeout=5.0,
+    publish_timeout=10.0,
 ):
     """Create a connected Paho transport and a close callback.
 
@@ -50,6 +51,10 @@ def create_paho_transport(
         raise ValueError("connack_timeout must be a number")
     if not 0.1 <= connack_timeout <= 30:
         raise ValueError("connack_timeout must be between 0.1 and 30 seconds")
+    if isinstance(publish_timeout, bool) or not isinstance(publish_timeout, (int, float)):
+        raise ValueError("publish_timeout must be a number")
+    if not 0.1 <= publish_timeout <= 60:
+        raise ValueError("publish_timeout must be between 0.1 and 60 seconds")
 
     try:
         import paho.mqtt.client as mqtt
@@ -156,7 +161,7 @@ def create_paho_transport(
         info = client.publish(publish_topic, payload, qos=qos, retain=retain)
         if info.rc != mqtt.MQTT_ERR_SUCCESS:
             return False
-        info.wait_for_publish(timeout=10)
+        info.wait_for_publish(timeout=publish_timeout)
         return bool(info.is_published())
 
     def close():
