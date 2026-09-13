@@ -12,12 +12,27 @@ with sync_playwright() as playwright:
         args=["--disable-dev-shm-usage", "--disable-gpu", "--no-sandbox"],
     )
     page = browser.new_page()
-    page.route("**/api/offline_events/sync_status", lambda route: route.abort())
+    page_errors = []
+    console_errors = []
+    page.on("pageerror", lambda error: page_errors.append(str(error)))
+    def record_console_error(msg):
+        location = msg.location or {}
+        if msg.type == "error" and "/api/offline_events/sync_status" not in location.get("url", ""):
+            console_errors.append(msg.text)
+
+    page.on("console", record_console_error)
+    page.route(
+        "**/api/offline_events/sync_status",
+        lambda route: route.fulfill(status=503, content_type="application/json", body="{}"),
+    )
+    page.route("**/favicon.ico", lambda route: route.fulfill(status=204, body=""))
     page.goto(f"{BASE_URL}/", wait_until="domcontentloaded")
     page.wait_for_selector("#eventSyncInfo")
     page.wait_for_timeout(500)
     status_text = page.locator("#eventSyncInfo").inner_text()
     assert status_text == "事件同步状态暂不可用", status_text
     assert page.locator("#statusBadge").count() == 1
+    assert not page_errors
+    assert not console_errors
     print("AGRIVISION_BROWSER_SMOKE_OK")
     browser.close()
