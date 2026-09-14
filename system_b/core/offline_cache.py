@@ -46,8 +46,14 @@ class OfflineEventCache:
         pending = []
         for path in sorted(self.directory.glob("*.json"), key=lambda item: (item.stat().st_mtime_ns, item.name)):
             try:
-                pending.append(json.loads(path.read_text(encoding="utf-8")))
+                event = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(event, dict):
+                    continue
+                self._path(event.get("event_id"))
+                pending.append(event)
             except (OSError, json.JSONDecodeError):
+                continue
+            except ValueError:
                 continue
         return pending
 

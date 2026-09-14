@@ -231,6 +231,8 @@ AgriVision/
 
 阶段 42 已为 HTTP、MQTT 和离线事件查询增加统一隐私白名单，未知 URL、凭据、图片路径和 payload 字段不会被外发。
 
+阶段 43 已增加离线缓存记录读取保护，坏记录不会进入同步器或阻塞有效事件，也不会被自动删除以便后续取证。
+
 公开发布门禁已在 GitHub Actions 对提交 `1c68338` 验证通过：[查看 CI 运行记录](https://github.com/sun2006-xin/AgriVision/actions/runs/34762246684)。
 
 MQTT 契约测试也已在 GitHub Actions 对提交 `de89384` 验证通过：[查看 MQTT CI 运行记录](https://github.com/sun2006-xin/AgriVision/actions/runs/34762437681)。这不代表真实 broker 或 ESP32 已完成联调。
