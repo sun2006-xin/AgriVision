@@ -13,14 +13,14 @@ if not exist "..\.venv\Scripts\activate" (
     python -m venv --system-site-packages ..\.venv
     echo [Init] venv created, installing dependencies...
     call ..\.venv\Scripts\activate
-    pip install fastapi uvicorn python-multipart pydantic onnxruntime torch torchvision ultralytics transformers qwen-vl-utils opencv-python pillow numpy -i https://mirrors.aliyun.com/pypi/simple/
+    pip install -r "%~dp0requirements-a.txt" -i https://mirrors.aliyun.com/pypi/simple/
     echo [Init] Dependencies installed!
 ) else (
     call ..\.venv\Scripts\activate
 )
 
 echo [1/3] Starting AI backend...
-start "AgriVision-AI" cmd /k "cd /d "%~dp0system_a\core" && call ..\.venv\Scripts\activate && uvicorn app_fastapi:app --reload --host 0.0.0.0 --port 8000"
+start "AgriVision-AI" cmd /k "cd /d "%~dp0system_a\core" && call ..\.venv\Scripts\activate && uvicorn app_fastapi:app --reload --host 127.0.0.1 --port 8000"
 
 echo Waiting for backend init (3s)...
 timeout /t 3 /nobreak >nul

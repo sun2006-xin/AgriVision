@@ -9,10 +9,13 @@ AgriVision System A — 智能大棚病虫害诊断站（FastAPI 后端）
   5. Qwen2-VL-2B      — 视觉语言模型生成诊断报告
 
 依赖: database.py（SQLite 历史/缓存/任务）、frontend.html（前端页面）
-启动: uvicorn app_fastapi:app --host 0.0.0.0 --port 8000
+本机启动: uvicorn app_fastapi:app --host 127.0.0.1 --port 8000
 """
 
 import os
+import logging
+import time
+import uuid
 os.environ["HF_HOME"] = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "models", "hf_cache")
 
 import cv2
@@ -25,13 +28,12 @@ import onnxruntime as ort
 import torch
 import torch.nn.functional as F
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from PIL import Image
 import io
-import torchvision.transforms as transforms
 from ultralytics import YOLO
 from transformers import (
     ChineseCLIPModel, ChineseCLIPProcessor,
@@ -43,6 +45,9 @@ from database import (
     create_task, get_task, update_task,
     cache_get, cache_set, clear_cache,
 )
+from classifier_inference import CLASS_NAMES, predict_classifier
+from evaluation import assess_probability_vector
+from security import ApiSecurity
 
 # ======================== 路径配置 ========================
 BASE_DIR = Path(__file__).parent
@@ -50,6 +55,36 @@ MODELS_DIR = BASE_DIR.parent / "models"
 FRONTEND_PATH = BASE_DIR / "frontend.html"
 ONNX_PATH = str(MODELS_DIR / "best_model.onnx")
 YOLO_PATH = str(MODELS_DIR / "yolov8n.pt")
+
+
+def _confidence_threshold():
+    try:
+        value = float(os.environ.get("AGRIVISION_UNCERTAINTY_THRESHOLD", "0.55"))
+        return value if 0.0 <= value <= 1.0 else 0.55
+    except ValueError:
+        return 0.55
+
+
+UNCERTAINTY_THRESHOLD = _confidence_threshold()
+
+
+def _bounded_runtime_float(name, default, lower, upper):
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if lower <= value <= upper else default
+
+
+UNCERTAINTY_MARGIN_THRESHOLD = _bounded_runtime_float(
+    "AGRIVISION_UNCERTAINTY_MARGIN", 0.15, 0.0, 1.0
+)
+UNCERTAINTY_ENTROPY_THRESHOLD = _bounded_runtime_float(
+    "AGRIVISION_UNCERTAINTY_ENTROPY", 0.75, 0.0, 1.0
+)
+OOD_MAX_PROBABILITY = _bounded_runtime_float(
+    "AGRIVISION_OOD_MAX_PROBABILITY", 0.40, 0.0, 1.0
+)
 
 if not os.path.exists(ONNX_PATH):
     raise FileNotFoundError("请先运行 convert_to_onnx.py 生成 best_model.onnx")
@@ -94,21 +129,6 @@ CLIP_TEXTS = [
     "番茄叶片出现黄绿相间的花叶斑驳，叶片皱缩畸形，生长缓慢",             # [11] tomato_mosaic_virus
 ]
 
-CLASS_NAMES = [
-    "苹果黑星病",          # [0] apple_scab
-    "玉米灰斑病",          # [1] corn_gray_leaf_spot
-    "玉米叶枯病",          # [2] corn_leaf_blight
-    "玉米锈病",            # [3] corn_rust
-    "健康",                # [4] healthy
-    "马铃薯早疫病",         # [5] potato_early_blight
-    "马铃薯晚疫病",         # [6] potato_late_blight
-    "南瓜白粉病",          # [7] squash_powdery_mildew
-    "番茄细菌性斑点病",     # [8] tomato_bacterial_spot
-    "番茄早疫病",          # [9] tomato_early_blight
-    "番茄晚疫病",          # [10] tomato_late_blight
-    "番茄花叶病毒病",       # [11] tomato_mosaic_virus
-]
-
 # 预计算 CLIP 文本嵌入（启动时一次性计算，避免每次请求重复计算）
 with torch.no_grad():
     text_inputs = clip_processor(text=CLIP_TEXTS, return_tensors="pt", padding=True)
@@ -143,13 +163,6 @@ def get_llm():
     return _llm_model, _llm_processor
 
 
-# ======================== 图片预处理 ========================
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
-
 # ======================== 文件安全校验 ========================
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 ALLOWED_MAGIC = [b"\xff\xd8\xff", b"\x89PNG", b"GIF8"]
@@ -173,12 +186,6 @@ def validate_image(contents: bytes):
         raise HTTPException(400, f"图片分辨率过高，最大边不超过 {MAX_DIMENSION}px")
 
 
-def preprocess_image(image_bytes: bytes):
-    """字节流 → 模型输入 Tensor"""
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    return transform(img).unsqueeze(0).numpy()
-
-
 # ======================== Pydantic 响应模型 ========================
 class BoxItem(BaseModel):
     x1: int
@@ -193,6 +200,14 @@ class PredictResponse(BaseModel):
     status: str = "success"
     class_name: str = Field(alias="class")
     confidence: float
+    uncertain: bool = False
+    undetermined: bool = False
+    abstain: bool = False
+    confidence_band: str = "medium"
+    decision_status: str = "known"
+    ood_suspected: bool = False
+    uncertainty_reason: str = "none"
+    confidence_semantics: str = "uncalibrated_softmax_score"
     probabilities: dict[str, float]
 
 
@@ -220,6 +235,14 @@ class ClipResponse(BaseModel):
     status: str = "success"
     top_class: str
     top_score: float
+    uncertain: bool = False
+    undetermined: bool = False
+    abstain: bool = False
+    confidence_band: str = "medium"
+    decision_status: str = "known"
+    ood_suspected: bool = False
+    uncertainty_reason: str = "none"
+    confidence_semantics: str = "uncalibrated_similarity_softmax"
     scores: dict[str, float]  # {类别名: 相似度}
 
 
@@ -247,10 +270,62 @@ class HistoryItem(BaseModel):
 
 # ======================== FastAPI 实例 ========================
 app = FastAPI(title="大棚病虫害诊断 API", version="2.1")
+logger = logging.getLogger("agrivision.system_a")
+api_security = ApiSecurity.from_env()
+
+
+@app.middleware("http")
+async def api_security_middleware(request: Request, call_next):
+    """Protect inference/history APIs while leaving health and docs public."""
+    if request.method != "OPTIONS":
+        remote_addr = request.client.host if request.client else ""
+        decision = api_security.authorize(request.url.path, remote_addr, request.headers)
+        if decision.status == "deny":
+            status_code = 503 if decision.reason == "api_auth_not_configured" else 401
+            return JSONResponse(
+                {"detail": "API token required" if status_code == 503 else "Invalid API token"},
+                status_code=status_code,
+            )
+        if decision.status == "rate_limited":
+            return JSONResponse(
+                {"detail": "Rate limit exceeded"},
+                status_code=429,
+                headers={"Retry-After": str(decision.retry_after)},
+            )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def request_observation(request, call_next):
+    request_id = request.headers.get("X-Request-ID", "")
+    if not request_id or len(request_id) > 64 or not all(
+        char.isalnum() or char in "._:-" for char in request_id
+    ):
+        request_id = uuid.uuid4().hex
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        logger.exception("request_failed event=request_failed path=%s request_id=%s", request.url.path, request_id)
+        raise
+    elapsed_ms = (time.perf_counter() - started) * 1000
+    response.headers["X-Request-ID"] = request_id
+    logger.info(
+        "request_completed event=request_completed method=%s path=%s status=%s duration_ms=%.1f request_id=%s",
+        request.method,
+        request.url.path,
+        response.status_code,
+        elapsed_ms,
+        request_id,
+    )
+    return response
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=os.environ.get(
+        "CORS_ORIGINS",
+        "http://127.0.0.1:8000,http://localhost:8000,http://127.0.0.1:5000,http://localhost:5000",
+    ).split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -259,15 +334,33 @@ app.add_middleware(
 # ======================== 工具函数 ========================
 def run_predict(contents: bytes) -> dict:
     """ONNX 分类推理"""
-    tensor = preprocess_image(contents)
-    raw = ort_session.run([output_name], {input_name: tensor})[0]
-    exp = np.exp(raw[0])
-    probs = exp / exp.sum()
-    idx = int(np.argmax(probs))
+    prediction = predict_classifier(
+        ort_session,
+        contents,
+        class_names=CLASS_NAMES,
+        input_name=input_name,
+        output_name=output_name,
+        threshold=UNCERTAINTY_THRESHOLD,
+        margin_threshold=UNCERTAINTY_MARGIN_THRESHOLD,
+        entropy_threshold=UNCERTAINTY_ENTROPY_THRESHOLD,
+        ood_max_probability=OOD_MAX_PROBABILITY,
+    )
+    confidence_info = prediction["confidence_info"]
     return {
-        "class": CLASS_NAMES[idx],
-        "confidence": round(float(probs[idx]), 4),
-        "probabilities": {c: round(float(p), 4) for c, p in zip(CLASS_NAMES, probs)},
+        "class": prediction["class"],
+        "confidence": prediction["confidence"],
+        "uncertain": confidence_info["uncertain"],
+        "undetermined": confidence_info["undetermined"],
+        "abstain": confidence_info["abstain"],
+        "confidence_band": confidence_info["band"],
+        "decision_status": confidence_info["decision_status"],
+        "ood_suspected": confidence_info["ood_suspected"],
+        "uncertainty_reason": confidence_info["uncertainty_reason"],
+        "confidence_semantics": "uncalibrated_softmax_score",
+        "probabilities": {
+            label: round(float(probability), 4)
+            for label, probability in prediction["probabilities"].items()
+        },
     }
 
 
@@ -355,10 +448,27 @@ def run_clip(contents: bytes) -> dict:
         scores = (img_embeds @ CLIP_TEXT_EMBEDS.T).squeeze(0)
         probs = scores.softmax(dim=0)
     top_idx = int(probs.argmax())
+    top_score = round(float(probs[top_idx]), 4)
+    probability_map = {CLASS_NAMES[i]: float(probs[i]) for i in range(len(CLASS_NAMES))}
+    confidence_info = assess_probability_vector(
+        probability_map,
+        threshold=UNCERTAINTY_THRESHOLD,
+        margin_threshold=UNCERTAINTY_MARGIN_THRESHOLD,
+        entropy_threshold=UNCERTAINTY_ENTROPY_THRESHOLD,
+        ood_max_probability=OOD_MAX_PROBABILITY,
+    )
     return {
         "top_class": CLASS_NAMES[top_idx],
-        "top_score": round(float(probs[top_idx]), 4),
-        "scores": {CLASS_NAMES[i]: round(float(probs[i]), 4) for i in range(len(CLASS_NAMES))},
+        "top_score": top_score,
+        "uncertain": confidence_info["uncertain"],
+        "undetermined": confidence_info["undetermined"],
+        "abstain": confidence_info["abstain"],
+        "confidence_band": confidence_info["band"],
+        "decision_status": confidence_info["decision_status"],
+        "ood_suspected": confidence_info["ood_suspected"],
+        "uncertainty_reason": confidence_info["uncertainty_reason"],
+        "confidence_semantics": "uncalibrated_similarity_softmax",
+        "scores": {label: round(score, 4) for label, score in probability_map.items()},
     }
 
 
@@ -378,10 +488,16 @@ def run_report(contents: bytes, pred: dict, det: dict, seg: dict, clip: dict) ->
 
     prompt_text = (
         f"你是一位农业植物保护专家。以下是对一张作物叶片的 AI 分析结果：\n"
-        f"- 分类模型：{pred['class']}（置信度 {pred['confidence']:.1%}）\n"
+        f"- 分类模型：{pred['class']}（置信度 {pred['confidence']:.1%}，"
+        f"{'不确定，需人工复核' if pred.get('uncertain') else '可作为辅助证据'}；"
+        f"分数未经校准，状态={pred.get('decision_status', 'known')}，"
+        f"原因={pred.get('uncertainty_reason', 'none')}）\n"
         f"- 检测模型：检测到 {det['total_objects']} 个目标，类别为 {boxes_info}\n"
         f"- 分割模型：分割出 {seg['total_objects']} 个区域，{seg_info}\n"
         f"- CLIP 零样本：Top3 相似度为 {clip_info}\n\n"
+        f"注意：上述模型分数是未经校准的辅助证据，不能作为诊断真值；"
+        f"若状态为 uncertain、undetermined 或 ood_suspected，必须明确建议人工复核。"
+        f"LLM 只负责解释已有证据和生成建议，不得替代模型评估真值。\n"
         f"请综合以上结果，用中文给出简洁的诊断报告（200字以内），包含：\n"
         f"1. 最可能的病害/虫害名称及判断依据\n"
         f"2. 严重程度评估\n"
@@ -460,8 +576,13 @@ def background_diagnose(task_id: str, contents: bytes):
             probabilities=pred_result["probabilities"],
         )
         update_task(task_id, "done", result)
-    except Exception as e:
-        update_task(task_id, "failed", {"error": str(e)})
+    except Exception as exc:
+        logger.error(
+            "background_diagnose_failed event=background_diagnose_failed task_id=%s error_type=%s",
+            task_id,
+            type(exc).__name__,
+        )
+        update_task(task_id, "failed", {"error": "诊断失败，请重试"})
 
 
 # ======================== 路由 ========================
@@ -594,7 +715,7 @@ async def get_result(task_id: str):
         # 缓存已在 background_diagnose 中处理
         resp["result"] = task["result"]
     elif task["status"] == "failed":
-        resp["error"] = task["result"].get("error", "未知错误") if task["result"] else "未知错误"
+        resp["error"] = "诊断失败，请重试"
 
     return resp
 
@@ -648,5 +769,25 @@ async def export_history_csv():
 
 
 @app.get("/health")
+@app.get("/health/ready")
 async def health():
-    return {"status": "healthy", "backend": "ONNX Runtime + YOLOv8"}
+    """Readiness-compatible health response without triggering LLM loading."""
+    checks = {
+        "onnx": ort_session is not None,
+        "detector": detect_model is not None,
+        "segmenter": seg_model is not None,
+        "clip": clip_model is not None,
+    }
+    ready = all(checks.values())
+    payload = {
+        "status": "ready" if ready else "degraded",
+        "service": "system-a",
+        "checks": checks,
+        "llm_loaded": _llm_model is not None,
+    }
+    return JSONResponse(payload, status_code=200 if ready else 503)
+
+
+@app.get("/health/live")
+async def health_live():
+    return {"status": "alive", "service": "system-a"}

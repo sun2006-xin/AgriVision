@@ -7,7 +7,9 @@
 """
 
 import json
+import math
 import os
+import tempfile
 from detection_enhanced import DetectionConfig, DEFAULT_CONFIG
 
 # 配置文件存放目录，位于本模块所在目录下的 config/ 文件夹
@@ -69,8 +71,11 @@ class ConfigManager:
                 # 尝试从 JSON 文件读取用户之前保存的配置
                 with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+                    is_valid, errors = self.validate_params(data)
+                    if not is_valid:
+                        raise ValueError("; ".join(errors))
                     self._apply_config(data)
-            except (json.JSONDecodeError, IOError) as e:
+            except (json.JSONDecodeError, IOError, TypeError, ValueError) as e:
                 # JSON 解析失败或文件 I/O 错误，回退到代码内置的默认配置
                 print(f"加载配置失败，使用默认配置: {e}")
                 self.current_config = DEFAULT_CONFIG.to_dict()
@@ -97,9 +102,31 @@ class ConfigManager:
         2. 对于 JSON 中缺失的参数，自动使用 DetectionConfig 的默认值填充
         3. 保证了 self.current_config 的字段集合始终与代码定义一致
         """
+        is_valid, errors = self.validate_params(data)
+        if not is_valid:
+            raise ValueError("; ".join(errors))
         config = DetectionConfig()      # 新建实例，内置所有默认值
-        config.from_dict(data)          # 用 JSON 数据覆盖默认值（仅覆盖已知字段）
+        config.from_dict(self._normalize_config(data))
         self.current_config = config.to_dict()  # 导出为字典，保证字段完整性
+
+    @staticmethod
+    def _normalize_config(params):
+        """Normalize JSON-compatible values before they reach the detector."""
+        normalized = dict(params)
+        if isinstance(normalized.get("base_resolution"), list):
+            normalized["base_resolution"] = tuple(normalized["base_resolution"])
+        return normalized
+
+    @staticmethod
+    def _check_order(candidate, keys, label, errors):
+        values = [candidate.get(key) for key in keys]
+        if all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            for value in values
+        ) and any(left > right for left, right in zip(values, values[1:])):
+            errors.append(f"{label}必须按从低到高排列")
 
     def save_config(self, params):
         """
@@ -113,13 +140,29 @@ class ConfigManager:
         :param params: 要保存的参数字典（通常为 self.current_config）
         :return: True 保存成功，False 保存失败
         """
+        if not isinstance(params, dict):
+            raise ValueError("参数必须是 JSON 对象")
+        candidate = DEFAULT_CONFIG.to_dict()
+        candidate.update(params)
+        is_valid, errors = self.validate_params(candidate, require_complete=True)
+        if not is_valid:
+            raise ValueError("; ".join(errors))
+        candidate = self._normalize_config(candidate)
         try:
-            with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(params, f, ensure_ascii=False, indent=2)
-            self.current_config = params
+            fd, temp_path = tempfile.mkstemp(
+                prefix="detection_params.", suffix=".tmp", dir=CONFIG_DIR
+            )
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                json.dump(candidate, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_path, CONFIG_FILE)
+            self.current_config = candidate
             return True
         except IOError as e:
             print(f"保存配置失败: {e}")
+            if 'temp_path' in locals() and os.path.exists(temp_path):
+                os.remove(temp_path)
             return False
     
     def get_current_config(self):
@@ -129,7 +172,7 @@ class ConfigManager:
         返回的是运行时内存中的参数字典，包含用户通过 Web 界面调整后的值。
         这是检测引擎实际使用的配置。
         """
-        return self.current_config
+        return dict(self.current_config)
 
     def get_default_config(self):
         """
@@ -169,11 +212,10 @@ class ConfigManager:
         :param value: 新的参数值
         :return: True 表示更新成功，False 表示参数名不存在
         """
-        if key in self.current_config:
-            self.current_config[key] = value
-            self.save_config(self.current_config)  # 每次修改立即持久化，避免断电丢失
-            return True
-        return False
+        if key not in self.current_config:
+            return False
+        self.update_params({key: value})
+        return True
 
     def update_params(self, params):
         """
@@ -188,47 +230,133 @@ class ConfigManager:
 
         :param params: 要更新的参数字典，如 {"GREEN_ADV": 35, "SAT_MIN": 40}
         """
-        for key, value in params.items():
-            if key in self.current_config:
-                self.current_config[key] = value
-        self.save_config(self.current_config)
+        if not isinstance(params, dict):
+            raise ValueError("参数必须是 JSON 对象")
+        candidate = dict(self.current_config)
+        candidate.update(params)
+        is_valid, errors = self.validate_params(candidate, require_complete=True)
+        if not is_valid:
+            raise ValueError("; ".join(errors))
+        self.save_config(candidate)
     
-    def validate_params(self, params):
+    def validate_params(self, params, require_complete=False):
         """
         验证参数的合法性（参数名 + 类型检查）
 
         验证规则：
         1. 参数名必须存在于 DEFAULT_CONFIG 中，拒绝未知参数（防止拼写错误或注入）
-        2. 类型检查以 DEFAULT_CONFIG 中对应参数的类型为基准：
-           - 默认值为 int 的参数 → 传入值必须是 int 或 float
-           - 默认值为 float 的参数 → 传入值必须是 int 或 float
-        3. 不检查数值范围（范围检查由前端滑块控件的 min/max 保证）
+        2. 类型检查以 DEFAULT_CONFIG 中对应参数的类型为基准；整数参数拒绝小数和 bool
+        3. 检查有限值、后端范围、奇数核大小和等级阈值关联约束
+        4. 可选地要求参数集合完整，用于持久化前的最终校验
 
         :param params: 待验证的参数字典
         :return: (is_valid, errors) — is_valid 为 True 表示全部通过，
                  errors 为错误信息列表（为空时表示无错误）
         """
         errors = []
+        if not isinstance(params, dict):
+            return False, ["参数必须是 JSON 对象"]
+
         # 以 DEFAULT_CONFIG 作为"参数白名单"和类型参照标准
         defaults = DEFAULT_CONFIG.to_dict()
+        param_info = self.get_param_info()
+        unknown = sorted(set(params) - set(defaults))
+        errors.extend(f"未知参数: {key}" for key in unknown)
+        if require_complete:
+            missing = sorted(set(defaults) - set(params))
+            errors.extend(f"缺少参数: {key}" for key in missing)
         
         for key, value in params.items():
             if key not in defaults:
-                errors.append(f"未知参数: {key}")
                 continue
             
             # bool 是 int 的子类，必须先排除，否则 True/False 会通过 int 检查
+            if key == "resolution_adaptive":
+                if not isinstance(value, bool):
+                    errors.append(f"参数 {key} 必须为布尔值，当前值: {value}")
+                continue
+
+            if key == "base_resolution":
+                if (
+                    not isinstance(value, (list, tuple))
+                    or len(value) != 2
+                    or any(isinstance(item, bool) or not isinstance(item, int) for item in value)
+                    or any(item < 16 or item > 4096 for item in value)
+                ):
+                    errors.append(f"参数 {key} 必须是两个 16-4096 的整数")
+                continue
+
             if isinstance(value, bool):
                 errors.append(f"参数 {key} 必须为数字，当前值: {value}")
                 continue
 
             default_value = defaults[key]
             if isinstance(default_value, int):
-                if not isinstance(value, (int, float)):
+                if not isinstance(value, int):
                     errors.append(f"参数 {key} 必须为整数，当前值: {value}")
             elif isinstance(default_value, float):
                 if not isinstance(value, (int, float)):
                     errors.append(f"参数 {key} 必须为数字，当前值: {value}")
+
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if not math.isfinite(float(value)):
+                    errors.append(f"参数 {key} 必须是有限数值，当前值: {value}")
+                bounds = param_info.get(key)
+                if bounds and not bounds["min"] <= value <= bounds["max"]:
+                    errors.append(
+                        f"参数 {key} 超出范围 [{bounds['min']}, {bounds['max']}]，当前值: {value}"
+                    )
+
+            if key == "MORPH_KERNEL_SIZE" and isinstance(value, int) and value % 2 == 0:
+                errors.append(f"参数 {key} 必须为奇数")
+
+        candidate = DEFAULT_CONFIG.to_dict()
+        current = getattr(self, "current_config", None)
+        if isinstance(current, dict):
+            candidate.update(current)
+        candidate.update(params)
+        self._check_order(
+            candidate,
+            ("BROWN_H_MIN", "BROWN_H_MAX"),
+            "棕色色相范围",
+            errors,
+        )
+        self._check_order(
+            candidate,
+            ("YELLOW_H_MIN", "YELLOW_H_MAX"),
+            "黄色色相范围",
+            errors,
+        )
+        self._check_order(
+            candidate,
+            ("NOTICE_DISEASE_COUNT", "WARNING_DISEASE_COUNT", "SERIOUS_DISEASE_COUNT"),
+            "病斑数量阈值",
+            errors,
+        )
+        self._check_order(
+            candidate,
+            ("NOTICE_DISEASE_RATIO", "WARNING_DISEASE_RATIO", "SERIOUS_DISEASE_RATIO"),
+            "病斑占比阈值",
+            errors,
+        )
+        self._check_order(
+            candidate,
+            ("NOTICE_PEST_COUNT", "WARNING_PEST_COUNT", "SERIOUS_PEST_COUNT"),
+            "虫害数量阈值",
+            errors,
+        )
+        self._check_order(
+            candidate,
+            ("WARNING_PEST_RATIO", "SERIOUS_PEST_RATIO"),
+            "虫害占比阈值",
+            errors,
+        )
+        self._check_order(
+            candidate,
+            ("GREEN_RATIO_WARNING", "GREEN_RATIO_NOTICE"),
+            "绿色占比阈值",
+            errors,
+        )
         
         return len(errors) == 0, errors
     

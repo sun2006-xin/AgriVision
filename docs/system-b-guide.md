@@ -20,15 +20,19 @@
 
 System B 是 AgriVision 的**实时病虫害监控子系统**，基于 Flask 构建，提供从图像采集、双引擎检测、告警通知到数据归档的完整闭环。
 
+算法评估清单、现场 FP/FN 定义和跨光照/设备验证方法见[算法评估与现场闭环](algorithm-evaluation.md)。
+
+System B 的路由分层、参数校验、任务生命周期和远程媒体认证见[架构与运行时边界收口](architecture-hardening.md)。
+
 ### 核心能力
 
 | 能力 | 说明 |
 |------|------|
 | 双引擎检测 | OpenCV 颜色阈值引擎 + YOLOv8 深度学习引擎，DualVerifier 融合决策 |
-| 多摄像头 | 支持同时接入多个 ESP32-CAM，每路独立检测线程 |
+| 多摄像头 | 支持同时接入多个 ESP32-CAM，每路独立任务队列和运行状态 |
 | 实时监控 | MJPEG 视频流 + 2 秒轮询状态刷新 |
 | 告警通知 | 钉钉 Webhook 推送，分级冷却机制 |
-| 数据管理 | 30 天自动归档、分页查询、趋势图表、ZIP 导出 |
+| 数据管理 | SQLite 历史库、30 天自动归档、分页查询、趋势图表、ZIP 导出 |
 | SD 卡同步 | ESP32-CAM 自动拍照存卡，服务端定时拉取 |
 | A-B 浅连接 | 一键调用 System A 五引擎深度诊断 |
 | 大屏看板 | `/dashboard` 多路网格同时监控 |
@@ -37,7 +41,7 @@ System B 是 AgriVision 的**实时病虫害监控子系统**，基于 Flask 构
 
 ```
 后端:  Flask + OpenCV + ultralytics YOLOv8 + threading
-前端:  内嵌 SPA (HTML + CSS + JavaScript + Chart.js)
+前端:  原生 SPA (HTML + CSS + JavaScript + Chart.js，无额外构建步骤)
 硬件:  ESP32-CAM (OV2640) + SD 卡
 通信:  HTTP (MJPEG 流 / REST API) + 钉钉 Webhook
 ```
@@ -47,7 +51,14 @@ System B 是 AgriVision 的**实时病虫害监控子系统**，基于 Flask 构
 ```
 system_b/
 ├── core/
-│   ├── app.py                  # Flask 主程序 (~2800 行, 含嵌入前端)
+│   ├── app.py                  # Flask 组装入口与设备/检测循环适配层
+│   ├── page_templates.py       # UTF-8 页面模板加载器
+│   ├── templates/              # 原生 HTML/CSS/JavaScript 页面模板
+│   ├── routes/                 # 页面、控制、事件、视频、诊断及工程 Blueprint
+│   ├── services/               # API 认证/限流、Prometheus 指标、时序融合
+│   ├── workers/                # 每摄像头有界任务队列和可停止 worker
+│   ├── repositories/           # 参数化 SQLite 历史访问
+│   ├── schemas/                # 请求白名单、类型、范围校验
 │   ├── detection_enhanced.py   # OpenCV 颜色阈值检测引擎
 │   ├── dual_verifier.py        # 双引擎融合决策器
 │   ├── yolo_detector.py        # YOLOv8 检测器封装
@@ -57,7 +68,8 @@ system_b/
 │   ├── config/
 │   │   └── detection_params.json   # 检测参数持久化
 │   └── detection_logs/
-│       ├── history.json        # 历史记录数据
+│       ├── history.db          # SQLite 历史记录（运行时生成）
+│       ├── history.json        # 旧版本迁移来源（可选）
 │       └── images/             # 标注图片存档
 ├── firmware/
 │   └── CameraWebServer.ino     # ESP32-CAM 固件
@@ -177,23 +189,17 @@ AND 策略的意义：单独用绿色优势通道会将黄色区域误判为叶�
 
 ### 2.4 检测稳定性
 
-#### 滑动窗口平均
+#### `TemporalFusion` 时序融合
 
-维护最近 5 帧 (`DETECTION_HISTORY_SIZE`) 的检测数值滑动平均，平滑单帧噪声：
+系统不再把“滑动平均”和“等级防抖”当成两个无法解释的黑盒步骤，而是由每个摄像头独立的 `services/temporal_fusion.py` 完成：
 
-```
-avg_disease_count = mean(最近5帧的 disease_count)
-avg_pest_count    = mean(最近5帧的 pest_count)
-```
+1. 最近 5 帧按 `0.8^(距当前帧)` 衰减加权，较新的帧权重更高。
+2. 等级使用加权投票选择 `candidate_level`，同时输出 `weighted_support`。
+3. 候选等级先进入 pending，连续 3 次成为候选后才切换 `stable_level`。
+4. 病斑数量、虫害数量和面积比使用同一组权重求平均。
+5. `/api/status` 和 `/api/dual_status` 的 `temporal` 字段保留最近帧、投票、支持度和待切换计数，便于现场回放。
 
-#### 等级防抖
-
-连续 3 帧 (`LEVEL_CHANGE_THRESHOLD`) 判定为同一等级后才切换，避免等级频繁跳变：
-
-```
-if 连续N帧等级 == X:
-    切换当前稳定等级为 X
-```
+因此单帧“严重”不会直接覆盖连续正常帧；连续异常也不会因为一帧短暂恢复而立即降级。该方法是可解释的工程平滑器，不等同于训练好的时序模型。
 
 ---
 
@@ -208,8 +214,8 @@ if 连续N帧等级 == X:
   {
     "id": "cam1",
     "name": "温室1号",
-    "url": "http://192.168.43.100/capture",
-    "base": "http://192.168.43.100",
+    "url": "http://192.0.2.10/capture",
+    "base": "http://192.0.2.10",
     "enabled": true
   }
 ]
@@ -235,8 +241,9 @@ cameras[cid]["state"] = {
     "latest_original_image": ndarray, # 最新原始帧 (OpenCV BGR, 用于参数预览)
     "latest_result": dict,           # 最新检测结果 (等级/数量/比例)
     "latest_dual_result": dict,      # 双引擎融合结果
-    "detection_history": list,       # 滑动窗口 (最近5帧数值)
-    "current_stable_level": int,     # 当前防抖等级
+    "detection_history": list,       # 时序窗口 (最近5帧数值)
+    "temporal_fusion": TemporalFusion, # 当前摄像头独立时序融合器
+    "current_stable_level": int,     # 当前稳定等级
     "comparison_history": list,      # 双引擎对比历史 (最近100帧)
     "last_error": str,               # 最近错误信息
     "frame_lock": Lock,              # 线程安全锁
@@ -245,7 +252,7 @@ cameras[cid]["state"] = {
 
 ### 3.3 检测循环
 
-每个启用的摄像头启动独立的 `detection_loop` 守护线程，每 3 秒执行一次 `run_detection_once()`：
+每个启用的摄像头由 `CameraTaskManager` 创建独立的 detection 有界队列和周期 worker，每 3 秒投递一次 `run_detection_once()`：
 
 ```
 run_detection_once(camera_id):
@@ -254,8 +261,7 @@ run_detection_once(camera_id):
   3. 颜色引擎检测 (detect_and_annotate)
   4. YOLO 引擎检测 (yolo_detector.detect)
   5. DualVerifier 融合
-  6. 滑动窗口平均
-  7. 等级防抖
+  6. TemporalFusion 衰减加权投票与 pending 确认
   8. 更新状态字典
   9. 条件保存 (level_code >= 1 时写入历史记录)
   10. 条件告警 (level_code >= 2 时触发钉钉通知)
@@ -265,7 +271,7 @@ run_detection_once(camera_id):
 
 ## 4. Web 监控界面
 
-前端以 Python 字符串形式嵌入在 `app.py` 的 `HTML_PAGE` 变量中，Flask 根路由 `/` 直接返回完整 HTML。无需额外前端构建工具。
+前端是无需额外构建工具的原生 HTML/CSS/JavaScript，保存在 `core/templates/main.html` 和 `core/templates/dashboard.html`。`page_templates.py` 以 UTF-8 加载模板，Flask 根路由 `/` 仍直接返回完整 HTML。
 
 ### 4.1 四个功能标签页
 
@@ -356,6 +362,8 @@ cooldown_seconds = 300  # 同一等级在冷却期内不重复发送
 - `POST /api/alert/config` -- 更新 webhook_url / enabled / cooldown_seconds
 - `POST /api/alert/test` -- 发送测试告警验证 Webhook 连通性
 
+Webhook URL 必须命中 `AGRIVISION_WEBHOOK_ALLOWED_HOSTS`（默认包含钉钉主机），远程地址必须使用 HTTPS。签名密钥通过 `AGRIVISION_ALERT_WEBHOOK_SECRET` 注入并用于 HMAC-SHA256，不会由 API 或前端回显；配置 GET 只返回脱敏主机名。页面的空 URL 输入不会覆盖已有配置，如需清除请在受保护 API 中显式提交空字符串。
+
 ---
 
 ## 6. SD 卡同步
@@ -364,7 +372,7 @@ cooldown_seconds = 300  # 同一等级在冷却期内不重复发送
 
 SD 卡同步实现 ESP32-CAM 本地存储与服务端的图片同步，有两种触发方式：
 
-**自动同步** (后台守护线程，每 300 秒):
+**自动同步**（每摄像头独立的周期 worker，每 300 秒投递任务）:
 
 ```
 sd_sync_loop(camera_id):
@@ -378,7 +386,7 @@ sd_sync_loop(camera_id):
 **手动触发** (用户点击"立即同步"按钮):
 
 ```
-POST /api/sync_now → 启动临时守护线程执行 sync_sd_card()
+GET /api/sync_now → 向对应摄像头的 `sd_sync` 有界队列投递任务；重复任务直接返回 `started=false`
 前端轮询 /api/sync_status 直到 syncing=false
 ```
 
@@ -387,12 +395,12 @@ POST /api/sync_now → 启动临时守护线程执行 sync_sd_card()
 用户点击"拍照存卡"按钮:
 
 ```
-GET /api/save_to_sd → 启动临时守护线程执行 save_to_sd_async():
+GET /api/save_to_sd → 向对应摄像头的 `save_to_sd` 有界队列投递 `save_to_sd_async()`:
   1. GET {base}/save → 触发 ESP32 立即拍照并写入 SD 卡
   2. 等待 2 秒 (确保写入完成)
   3. 更新拍照状态 (done/file/error)
 
-前端轮询 /api/save_status 直到 done=true
+前端使用同一 `camera_id` 轮询 /api/save_status 直到 done=true；不同摄像头的状态互不覆盖
 拍照成功后自动触发一次 SD 卡同步
 ```
 
@@ -659,6 +667,59 @@ ESP32-CAM 固件提供以下 HTTP 端点供 System B 调用：
 | `/api/sync_now` | GET | `camera_id` | 手动触发 SD 同步 |
 | `/api/sync_status` | GET | - | 查询同步进度 |
 
+### 9.9.1 离线事件队列
+
+System B 会把检测摘要写入本地有界队列 `offline_events/`，用于网络恢复后的传输器消费。队列不保存图像、摄像头 URL、Webhook 或凭据；达到条数/字节上限时会淘汰最旧事件。
+
+| 路径 | 方法 | 说明 |
+|------|------|------|
+| `/api/offline_events` | GET | 返回待同步事件及数量 |
+| `/api/offline_events/ack` | POST | 外部传输成功后按 `event_id` 确认删除 |
+| `/api/offline_events/sync` | POST | 手动发送有界批次；仅在传输返回 2xx 后确认删除 |
+| `/api/offline_events/sync_status` | GET | 返回脱敏的自动同步状态、队列数量和固定计数 |
+
+如需显式启用 HTTP 同步，请设置环境变量 `AGRIVISION_EVENTS_SINK_URL`。远端地址必须使用 HTTPS；仅允许 `localhost`、`127.0.0.1` 或 `::1` 使用 HTTP。服务默认不自动外发，避免部署时因误配置产生数据流出。每次请求携带由有序事件批次生成的 `Idempotency-Key`，接收端应按该键或事件 `event_id` 去重。
+
+当前版本提供本地队列、确认接口、受限的手动同步和默认关闭的自动调度；同步接口与后台调度通过同一主机的 SQLite 运行时锁串行执行，并发请求返回 409。自动调度不等同于真实公网或 ESP32 断网恢复联调。
+
+### 9.9.2 本地端到端验收
+
+`tests/test_stage5_e2e.py` 提供不联网的内存接收端：第一次模拟接收后响应丢失，第二次以相同幂等键重试并返回 208。测试验证接收端只保留一份事件，且本地队列只在成功响应后删除。它是协议验收，不代表真实 HTTPS 服务、MQTT broker 或 ESP32 已完成联调。
+
+`tests/test_stage6_http_loopback.py` 会启动临时本机 HTTP 接收端，验证 `event_transport.send_events_http` 实际发送的 JSON 和 `Idempotency-Key`。服务使用随机端口并在测试结束后关闭，不产生公网流量。
+
+### 9.9.3 MQTT 契约准备
+
+`event_mqtt.MqttEventTransport` 是注入式 MQTT 适配层：调用方提供发布器，适配层负责具体主题校验、版本化批次载荷、QoS 1、`retain=False`、有限重试和成功后确认。当前版本不自动建立 broker 连接；接入真实客户端前必须补充 TLS/认证配置、接收端幂等处理和设备现场日志。
+
+该契约测试已在 GitHub Actions 干净 Runner 上通过；请将其视为软件回归证据，不要替代真实 broker 和设备现场验收。
+
+`tests/test_stage10_local_mqtt_broker.py` 使用标准库临时 broker 做协议级验收，配合 `requirements-mqtt.txt` 中的 Paho 2.1.0 可验证本机 CONNECT、QoS 1、PUBACK 和关闭流程。它只监听 `127.0.0.1` 随机端口；公网 TLS、认证、ACL、重连和 ESP32 链路仍需单独验收。
+
+`tests/test_stage23_mqtt_tls_local.py` 进一步使用临时自签名 CA 和 TLS broker 验证 `mqtts://`、`ca_certs`、TLS 握手、QoS 1 发布和确认。证书只存在测试临时目录；公网证书链、认证、ACL、证书轮换和 ESP32 链路仍需单独验收。
+
+`tests/test_stage24_mqtt_auth_local.py` 在同样的回环 TLS broker 上验证独立 username/password 注入；正确凭据可以发布，错误凭据会被 CONNACK 拒绝，不会发布事件。运行时会检查 MQTT v5 `ReasonCode`，认证失败统一返回不泄露配置的连接错误。
+
+MQTT broker 地址应通过 `mqtt_config.validate_broker_url` 校验：远端使用 `mqtts://host:8883`，本机开发可使用 `mqtt://127.0.0.1:1883`。不要把账号、密码或路径写入 URL；自动调度启用后才会在首次发送时建立 broker 连接。
+
+如需接入 Paho，可安装 `requirements-mqtt.txt`，调用 `mqtt_runtime.create_paho_transport(...)` 获取传输器和 `close` 回调。broker URL、topic、client ID 和凭据应从部署环境注入；函数不会在模块导入时连接。关闭服务前应调用 `close`，以停止 Paho 网络循环。当前仓库只用假客户端测试该生命周期，未提供真实 broker 凭据。
+
+System B 的 `/api/offline_events/sync_mqtt` 是手动入口，不会在启动时自动连接。配置 `AGRIVISION_MQTT_BROKER_URL`、`AGRIVISION_MQTT_TOPIC` 和 `AGRIVISION_MQTT_CLIENT_ID` 后，再按需通过请求体 `{"limit": 50}` 触发；用户名/密码使用独立环境变量注入，不能写入 URL。初始连接最多重试 5 次，未配置或最终连接失败时返回 503，响应不包含 broker 地址或凭据。
+
+连接建立后由 Paho 网络循环负责运行中重连；本地测试已模拟 broker 主动断开并验证恢复。生产部署仍需在真实网络条件下验证 TLS、认证、ACL、长时间抖动和设备恢复。
+
+### 9.9.4 自动同步配置
+
+自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后，服务启动时会创建可停止的后台调度线程；设置为 `0` 或不设置则不自动外发。每轮最多同步 `AGRIVISION_EVENTS_SYNC_LIMIT` 条事件（默认 50，范围 1–100），优先使用完整 MQTT 配置，否则使用 `AGRIVISION_EVENTS_SINK_URL` 的 HTTP sink。同步失败不会删除本地事件，后台异常也不会终止调度线程。
+
+通过 `/api/offline_events/sync_status` 可查看 `enabled`、`running`、`pending`、成功/失败批次数、发送/确认事件数和 UTC 时间戳。接口不会返回 broker 地址、账号、密码、异常原文或事件正文；`last_error` 只会返回固定的 `sync failed`。
+
+HTTP 同步对错误分类处理：4xx 返回会标记为 `permanent` 并停止重试；5xx、其他非 2xx 和网络异常最多按配置重试，耗尽后标记为 `retry_exhausted`。`/api/offline_events/sync_status` 的 `last_failure_type` 只会返回固定类别，不返回 HTTP 响应正文。
+
+### 9.9.5 多进程部署边界
+
+System B 使用 `offline_events/.sync-lock.db` 的 SQLite `BEGIN IMMEDIATE` 作为同一主机上的非阻塞同步锁，手动接口和后台调度共用它。该文件属于运行时数据并已被 Git 忽略，不应复制到公开仓库。它不能替代跨主机、跨容器或多节点部署中的分布式锁；这类部署应由上层编排系统保证单一消费者，或另行接入经过认证的协调服务。
+
 ### 9.10 告警接口
 
 | 路径 | 方法 | 说明 |
@@ -668,7 +729,28 @@ ESP32-CAM 固件提供以下 HTTP 端点供 System B 调用：
 | `/api/alert/history` | GET | 获取告警历史 |
 | `/api/alert/test` | POST | 发送测试告警 |
 
-### 9.11 A-B 浅连接接口
+告警配置的 URL 必须命中允许主机列表，远程 URL 必须使用 HTTPS；签名 secret 只从 `AGRIVISION_ALERT_WEBHOOK_SECRET` 读取。GET 配置和页面只显示脱敏主机名，不返回 query token 或 secret。空输入不会覆盖已配置的 URL；如需清除配置，使用受保护的 API 显式提交空字符串。
+
+### 9.10.1 工程化状态接口
+
+| 路径 | 方法 | 说明 |
+|------|------|------|
+| `/api/auth/session` | POST | 将 Bearer token 换成短期浏览器媒体会话 |
+| `/api/tasks` | GET | 每摄像头各任务的排队、运行、完成、失败、取消和重试计数 |
+| `/metrics` | GET | HTTP 延迟、推理耗时、队列深度、检测错误和告警结果 |
+
+`/api/*`、`/metrics`、`/video_feed*`、`/dataset/*` 和 `/history/image/*` 需要认证。回环开发且未配置 token 时可访问；远程部署必须设置 `AGRIVISION_API_TOKEN`，支持 `Authorization: Bearer ...` 或 `X-API-Key`。`AGRIVISION_API_RATE_LIMIT_MAX` 与 `AGRIVISION_API_RATE_LIMIT_WINDOW` 提供按来源地址的有界限流。System A 共享同一 token 边界，System B 代理请求 `/report` 时会自动带上 `AGRIVISION_SYSTEM_A_API_TOKEN`，未设置时回退到 `AGRIVISION_API_TOKEN`。
+
+远程打开内嵌监控页面时，页面第一次收到 401 会提示输入 token，并只保存到当前浏览器会话的 `sessionStorage`；随后调用 `/api/auth/session` 换取绑定来源地址的短期 HttpOnly/SameSite cookie，视频 `<img>` 因此可以安全加载。不会把 token 拼接到 URL；脚本客户端应直接设置上述请求头。
+
+### 9.11 健康检查接口
+
+| 路径 | 方法 | 说明 |
+|------|------|------|
+| `/health/live` | GET | 进程存活检查，服务能响应即返回 200 |
+| `/health/ready` | GET | 检查启用摄像头是否有帧、YOLO 是否就绪；降级时返回 503 |
+
+### 9.12 A-B 浅连接接口
 
 | 路径 | 方法 | 说明 |
 |------|------|------|
@@ -683,7 +765,9 @@ ESP32-CAM 固件提供以下 HTTP 端点供 System B 调用：
 
 流程: 获取当前帧 → JPEG 编码 → POST 到 System A `/report` → 返回诊断报告 (超时 180 秒)
 
-### 9.12 视频流接口
+代理请求使用 multipart 字段 `file`，与 System A `/report` 的 `UploadFile` 参数保持一致。System A 的业务 API 也受 token/限流保护；默认 CORS 仅允许本机 A/B 地址，跨主机部署时应设置 `CORS_ORIGINS` 环境变量，并在 A/B 两端使用同一 token 或显式配置 A 的服务 token。
+
+### 9.13 视频流接口
 
 | 路径 | 方法 | 说明 |
 |------|------|------|
@@ -714,7 +798,7 @@ cd /d "%~dp0system_b\core"
 if not exist "..\.venv\Scripts\activate" (
     python -m venv ..\.venv
     call ..\.venv\Scripts\activate
-    pip install flask opencv-python numpy requests ultralytics -i https://mirrors.aliyun.com/pypi/simple/
+    pip install -r "..\..\requirements-b.txt"
 )
 
 :: 启动后端
@@ -734,6 +818,8 @@ start "" "http://127.0.0.1:5000"
 3. 在新窗口中启动 Flask 后端 (`python app.py`)
 4. 等待 3 秒初始化 (首次检测 + 后台线程启动)
 5. 自动打开浏览器访问 `http://127.0.0.1:5000`
+
+默认服务只监听 `127.0.0.1`。需要远程访问时，先设置 `AGRIVISION_BIND_HOST` 和至少 16 个字符的 `AGRIVISION_API_TOKEN`；不要直接把 token 写进批处理文件或仓库。也可运行 `powershell -ExecutionPolicy Bypass -File deploy/start_system_b.ps1 -InstallDependencies`。
 
 ### 10.3 前置条件
 
@@ -764,18 +850,14 @@ start "" "http://127.0.0.1:5000"
 │     threaded=True 支持多客户端并发                        │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
-│  守护线程 (per camera, daemon=True)                      │
+│  CameraTaskManager（每 camera / task 独立）              │
 │  ┌─────────────────────┐  ┌─────────────────────┐       │
-│  │ detection_loop      │  │ sd_sync_loop        │       │
-│  │ 每 3 秒检测一次      │  │ 每 300 秒同步一次    │       │
-│  │ run_detection_once() │  │ sync_sd_card()      │       │
+│  │ detection queue     │  │ sd_sync queue       │       │
+│  │ 每 3 秒投递一次      │  │ 每 300 秒投递一次    │       │
 │  └─────────────────────┘  └─────────────────────┘       │
-│                                                         │
-│  临时守护线程 (按需创建, 完成后销毁)                       │
-│  ┌─────────────────────┐  ┌─────────────────────┐       │
-│  │ save_to_sd_async    │  │ sync_sd_card        │       │
-│  │ 用户点击拍照时创建    │  │ 用户点击同步时创建    │       │
-│  └─────────────────────┘  └─────────────────────┘       │
+│  ┌─────────────────────┐                                │
+│  │ save_to_sd queue    │  用户触发时投递，重复则拒绝      │
+│  └─────────────────────┘                                │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -787,16 +869,17 @@ if __name__ == '__main__':
     for cid, cam in cameras.items():
         run_detection_once(cid)
 
-        # 2. 启动检测守护线程 (每 3 秒循环检测)
-        det_thread = threading.Thread(target=detection_loop, args=(cid,), daemon=True)
-        det_thread.start()
-
-        # 3. 启动 SD 同步守护线程 (每 300 秒循环同步)
-        sd_thread = threading.Thread(target=sd_sync_loop, args=(cid,), daemon=True)
-        sd_thread.start()
+        # 2. 注册每摄像头可停止的检测和 SD 同步周期任务
+        camera_task_manager.start_periodic(
+            cid, "detection", lambda cid=cid: run_detection_once(cid), 3
+        )
+        camera_task_manager.start_periodic(
+            cid, "sd_sync", lambda cid=cid: sync_sd_card(cid), SD_SYNC_INTERVAL
+        )
 
     # 4. 启动 Flask 服务器 (阻塞主线程)
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+    bind_host = os.environ.get("AGRIVISION_BIND_HOST", "127.0.0.1")
+    app.run(host=bind_host, port=5000, debug=False, threaded=True)
 ```
 
 ### 11.3 线程安全
@@ -804,18 +887,20 @@ if __name__ == '__main__':
 | 锁 | 保护对象 | 使用场景 |
 |----|----------|----------|
 | `frame_lock` (per camera) | 摄像头状态字典 | 检测线程写入 / API 线程读取 |
-| `sd_lock` | SD 同步状态 `sd_sync_info` | 同步线程 / API 线程 |
-| `save_sd_lock` | 拍照状态 `save_sd_info` | 拍照线程 / API 线程 |
+| `sd_lock` | 每摄像头 SD 同步状态 | 同步 worker / API 线程 |
+| `save_sd_lock` | 每摄像头拍照状态 | 拍照 worker / API 线程 |
 | `config_lock` | 配置管理器 | 参数读写 / 检测线程读取 |
 | `_inference_lock` (YOLODetector) | YOLO 模型推理 | 多线程推理互斥 |
-| `_lock` (HistoryManager) | 历史记录文件 | 写入/查询/导出互斥 |
+| `CameraTaskManager` 内部锁 | 每摄像头任务槽位和队列 | 投递、运行、停止和计数 |
+| SQLite 事务 | `detection_records` 历史表 | 写入/查询/导出并发 |
 
 ### 11.4 关键常量
 
 | 常量 | 值 | 说明 |
 |------|-----|------|
-| `DETECTION_HISTORY_SIZE` | 5 | 滑动窗口帧数 |
-| `LEVEL_CHANGE_THRESHOLD` | 3 | 等级防抖连续帧数 |
+| `DETECTION_HISTORY_SIZE` | 5 | `TemporalFusion` 时序窗口帧数 |
+| `LEVEL_CHANGE_THRESHOLD` | 3 | 候选等级连续确认帧数 |
+| `TemporalFusion.decay` | 0.8 | 越新的帧权重越高 |
 | `COMPARISON_HISTORY_SIZE` | 100 | 双引擎对比历史帧数 |
 | `SD_SYNC_INTERVAL` | 300 | SD 自动同步间隔 (秒) |
 | `SAVE_INTERVAL` | 60 | 检测间隔内的保存节流 (秒) |

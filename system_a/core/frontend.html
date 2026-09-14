@@ -195,6 +195,26 @@ let API_BASE = (window.location.origin && window.location.origin !== 'null')
     ? window.location.origin
     : 'http://127.0.0.1:8000';
 
+// 远程部署时从当前会话注入 token，不把凭据写入 URL 或持久化存储。
+const nativeFetch = window.fetch.bind(window);
+window.fetch = async function(input, init = {}) {
+    const requestInit = {...init};
+    const headers = new Headers(requestInit.headers || {});
+    const savedToken = sessionStorage.getItem('agrivision_api_token') || '';
+    if (savedToken) headers.set('Authorization', 'Bearer ' + savedToken);
+    requestInit.headers = headers;
+    let response = await nativeFetch(input, requestInit);
+    if (response.status === 401 && !savedToken) {
+        const token = window.prompt('请输入 API token（仅保存到当前会话）:');
+        if (token && token.trim()) {
+            sessionStorage.setItem('agrivision_api_token', token.trim());
+            headers.set('Authorization', 'Bearer ' + token.trim());
+            response = await nativeFetch(input, {...requestInit, headers});
+        }
+    }
+    return response;
+};
+
 function toggleSettings() {
     const p = $('settings-panel');
     const show = p.style.display === 'none';

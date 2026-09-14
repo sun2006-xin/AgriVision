@@ -13,7 +13,7 @@ if not exist "..\.venv\Scripts\activate" (
     python -m venv ..\.venv
     echo [Init] venv created, installing dependencies...
     call ..\.venv\Scripts\activate
-    pip install flask opencv-python numpy requests ultralytics -i https://mirrors.aliyun.com/pypi/simple/
+    pip install -r "%~dp0requirements-b.txt" -i https://mirrors.aliyun.com/pypi/simple/
     echo [Init] Dependencies installed!
 ) else (
     call ..\.venv\Scripts\activate

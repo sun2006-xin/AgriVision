@@ -1,0 +1,21 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    AGRIVISION_BIND_HOST=0.0.0.0 \
+    AGRIVISION_API_AUTH_REQUIRED=true
+
+WORKDIR /app
+
+COPY requirements-b.txt ./requirements-b.txt
+RUN python -m pip install --no-cache-dir --disable-pip-version-check -r requirements-b.txt
+
+COPY cameras.json ./cameras.json
+COPY system_b ./system_b
+
+EXPOSE 5000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health/live', timeout=3)"
+
+CMD ["python", "system_b/core/app.py"]

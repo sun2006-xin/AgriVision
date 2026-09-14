@@ -517,6 +517,10 @@ file: (二进制图片文件)
 
 **注意**: 此接口会先并行运行四引擎（`asyncio.gather`），再调用 LLM 生成报告，响应时间较长（CPU 环境可能需要 30-60 秒）。
 
+分类和 CLIP 响应包含 `uncertain`、`undetermined`、`abstain`、`confidence_band`、`decision_status`、`ood_suspected`、`uncertainty_reason` 和 `confidence_semantics` 字段。默认情况下分数低于 `0.55` 会标记为不确定，可通过环境变量 `AGRIVISION_UNCERTAINTY_THRESHOLD` 调整；同时会检查 top-1 margin 和归一化熵。`undetermined` 表示模型没有足够类别优势，`ood_suspected` 是基于分数/熵的拒识启发式；两者都不是经过独立数据集验证的 OOD 检测器。
+
+所有 System A 模型分数目前均为未经校准的辅助分数，不能直接解释为诊断概率。评估清单、`tools/generate_prediction_manifest.py`、`--strict-provenance`、图片 SHA-256 审计、ECE、可靠性分箱、Brier score、按光照/设备/作物切片、鲁棒性 gap 和现场 FP/FN 阈值曲线见 [算法评估与现场闭环](algorithm-evaluation.md)。Qwen2-VL 只负责解释已有分类、检测、分割和 CLIP 证据并生成建议，不得作为诊断真值。
+
 ### 3.7 `POST /diagnose` -- 综合诊断（同步）
 
 一次请求同时执行分类 + 检测 + 分割 + CLIP 四引擎，结果写入历史记录。四引擎通过 `asyncio.to_thread` + `asyncio.gather` 并行执行。
@@ -969,12 +973,14 @@ models/
 system_a\start.bat
 ```
 
+服务器或脚本化部署可使用项目根目录的 `deploy/start_system_a.ps1`；它默认绑定 `127.0.0.1`，远程绑定时会强制检查 `AGRIVISION_API_TOKEN`，并以单 worker 启动以避免重复加载模型。
+
 `start.bat` 内容：
 
 ```batch
 @echo off
 cd /d "%~dp0core"
-"%~dp0.venv\Scripts\python.exe" -m uvicorn app_fastapi:app --host 0.0.0.0 --port 8000
+"%~dp0.venv\Scripts\python.exe" -m uvicorn app_fastapi:app --host 127.0.0.1 --port 8000
 pause
 ```
 
@@ -982,14 +988,14 @@ pause
 
 ```bash
 cd system_a/core
-uvicorn app_fastapi:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app_fastapi:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 **方式三: Python 直接启动**
 
 ```bash
 cd system_a/core
-python -c "import uvicorn; uvicorn.run('app_fastapi:app', host='0.0.0.0', port=8000, reload=True)"
+python -c "import uvicorn; uvicorn.run('app_fastapi:app', host='127.0.0.1', port=8000, reload=True)"
 ```
 
 ### 7.4 访问服务
@@ -1106,6 +1112,7 @@ Group=www-data
 WorkingDirectory=/opt/AgriVision/system_a/core
 Environment=PATH=/opt/AgriVision/system_a/.venv/bin:/usr/bin
 Environment=HF_ENDPOINT=https://hf-mirror.com
+EnvironmentFile=/etc/agrivision/system-a.env
 ExecStart=/opt/AgriVision/system_a/.venv/bin/python -m uvicorn app_fastapi:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5
@@ -1130,6 +1137,8 @@ sudo systemctl status agrivision-a
 # 查看日志
 sudo journalctl -u agrivision-a -f
 ```
+
+`/etc/agrivision/system-a.env` 由部署管理员创建并限制权限，至少包含 `AGRIVISION_API_TOKEN` 和 `AGRIVISION_API_AUTH_REQUIRED=true`；不要把真实 token 写入仓库或 systemd unit 文件。
 
 #### 方式二：PM2
 
@@ -1158,7 +1167,7 @@ pm2 restart agrivision-a  # 重启
 
 ### 8.5 模型文件分发
 
-模型文件体积较大，不适合直接放入 Git 仓库。以下是几种分发方案：
+当前公开分支实际包含 `system_a/models/` 和 `system_b/models/` 下的五个小型运行时权重；HuggingFace 缓存不进入 Git。发布前必须确认权重的再分发许可。若未来改用 Git LFS 或独立模型包，需同步更新 README、启动脚本、校验哈希和下载说明。以下方案用于后续迁移：
 
 #### 方案一：对象存储 + 下载脚本
 
@@ -1294,7 +1303,7 @@ uvicorn app_fastapi:app --host 0.0.0.0 --port 8000
 
 #### CORS_ORIGINS
 
-默认允许所有来源（`*`）。生产环境建议限制为实际域名：
+默认只允许本机 System A/B 前端来源。生产环境跨域访问时应显式限制为实际域名：
 
 ```bash
 # 仅允许指定域名（逗号分隔）
@@ -1311,64 +1320,19 @@ os.environ["HF_HOME"] = os.path.join(BASE_DIR, "..", "models", "hf_cache")
 
 ### 8.8 速率限制
 
-公网部署时需考虑 API 滥用防护。以下提供三种方案：
-
-#### 方案一：Nginx 层限流（推荐，零代码改动）
-
-```nginx
-# 定义限流区域（每个 IP 每秒 2 个请求）
-limit_req_zone $binary_remote_addr zone=api_limit:10m rate=2r/s;
-
-server {
-    location / {
-        limit_req zone=api_limit burst=5 nodelay;
-        proxy_pass http://127.0.0.1:8000;
-        # ... 其他配置
-    }
-}
-```
-
-#### 方案二：FastAPI 中间件限流
-
-在 `app_fastapi.py` 中添加简单限流中间件：
-
-```python
-import time
-from collections import defaultdict
-
-_rate_limit = defaultdict(list)
-RATE_LIMIT_WINDOW = 60   # 时间窗口（秒）
-RATE_LIMIT_MAX = 30       # 窗口内最大请求数
-
-@app.middleware("http")
-async def rate_limit_middleware(request, call_next):
-    ip = request.client.host
-    now = time.time()
-    _rate_limit[ip] = [t for t in _rate_limit[ip] if now - t < RATE_LIMIT_WINDOW]
-    if len(_rate_limit[ip]) >= RATE_LIMIT_MAX:
-        return JSONResponse(status_code=429, content={"detail": "请求过于频繁，请稍后再试"})
-    _rate_limit[ip].append(now)
-    return await call_next(request)
-```
-
-#### 方案三：使用 slowapi 库
+System A 已在应用层提供认证和有界限流，和 System B 使用相同的环境变量：
 
 ```bash
-pip install slowapi
+# 公网或跨主机部署必须设置；本机回环开发可以暂不设置
+export AGRIVISION_API_TOKEN="至少 16 个字符的随机值"
+export AGRIVISION_API_AUTH_REQUIRED=true
+export AGRIVISION_API_RATE_LIMIT_MAX=120
+export AGRIVISION_API_RATE_LIMIT_WINDOW=60
 ```
 
-```python
-from slowapi import Limiter
-from slowapi.util import get_remote_address
+`/predict`、`/detect`、`/segment`、`/clip`、`/report`、`/diagnose`、`/result/*` 和 `/history*` 需要 `Authorization: Bearer <token>` 或 `X-API-Key`。`/health/live`、`/health/ready`、`/docs` 保持公开，方便探针和接口发现。未配置 token 的远程请求会返回 503；认证失败返回 401；限流返回 429。前端只把 token 保存到当前浏览器会话，不拼接到 URL。
 
-limiter = Limiter(key_func=get_remote_address)
-app.state.limiter = limiter
-
-@app.post("/diagnose/async")
-@limiter.limit("10/minute")
-async def diagnose_async(request: Request, ...):
-    ...
-```
+应用层限流适合单进程基础保护；公网仍建议在 Nginx 或网关层增加更细粒度限流、TLS、访问日志和 IP 策略。多进程/多副本部署需要把限流状态移到共享网关或 Redis。
 
 ### 8.9 防火墙与端口配置
 
@@ -1420,14 +1384,17 @@ sudo firewall-cmd --list-all
 [ ] hf_cache/ 下 Chinese-CLIP 和 Qwen2-VL 模型已缓存
 [ ] 服务可正常启动（uvicorn 无报错）
 [ ] /health 接口返回正常
+[ ] /health/live 和 /health/ready 探针已接入
 [ ] /predict 接口可正常推理
+[ ] 公网部署已设置 AGRIVISION_API_TOKEN
+[ ] 认证接口和限流行为已完成回归
 [ ] Nginx 反代配置完成，可正常访问
 [ ] HTTPS 证书已配置（Let's Encrypt 或其他）
 [ ] systemd 或 PM2 进程管理已配置，开机自启
 [ ] 防火墙 / 安全组规则已配置
 [ ] CORS_ORIGINS 已设置为实际域名
 [ ] --reload 参数已移除
-[ ] 速率限制已配置
+[ ] 网关层限流已配置（如适用）
 [ ] 日志收集已配置（journalctl / PM2 logs）
 ```
 
