@@ -2629,6 +2629,16 @@ def api_offline_events_sync_mqtt():
             return jsonify({"success": False, "error": "limit must be an integer from 1 to 100"}), 400
 
         events = offline_event_cache.list_pending()[:limit]
+        if not events:
+            event_sync_status.record("empty", "mqtt", 0)
+            event_sync_status.record_mqtt_runtime("connected")
+            return jsonify({
+                "success": True,
+                "pending": 0,
+                "sent": 0,
+                "acked": 0,
+                "attempts": 0,
+            })
         result = transport.sync(events, offline_event_cache.ack)
         pending = len(offline_event_cache.list_pending())
         outcome = "success" if result["sent"] == len(events) else "failure"

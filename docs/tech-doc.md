@@ -252,6 +252,8 @@ MQTT 发布器将 Paho `RuntimeError` 与其他发布失败统一纳入有界重
 
 阶段 38 为 MQTT 增加脱敏运行时状态闭环。状态对象只保留固定生命周期状态和固定失败类别：`not_started`、`not_configured`、`connecting`、`connected`、`connection_failed`、`publish_failed`，以及 `runtime`、`retry_exhausted`、`permanent`。手动同步与后台同步共用同一状态记录；发布重试耗尽仍不确认事件。前端通过白名单映射显示中文状态，不读取或展示异常原文、broker 地址和凭据。
 
+阶段 39 修正手动 MQTT 同步的空队列语义：没有待发送事件时记录 `empty`，返回 `attempts=0`，不调用发布器，也不增加成功批次数。这样面板统计与实际网络行为一致。
+
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
 ### 3.6 启动方式
