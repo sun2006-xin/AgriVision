@@ -2,14 +2,14 @@
 # pip install -r requirements-b.txt
 
 # Web framework
-flask
+flask==3.1.3
 
 # Image processing & detection
-opencv-python
-numpy
+opencv-python==4.11.0.86
+numpy==1.26.4
 
 # HTTP requests (System A integration, DingTalk webhook)
-requests
+requests==2.34.2
 
 # Object detection (YOLOv8)
-ultralytics
+ultralytics==8.4.93

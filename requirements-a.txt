@@ -2,27 +2,27 @@
 # pip install -r requirements-a.txt
 
 # Web framework
-fastapi
-uvicorn
-python-multipart
-pydantic
+fastapi==0.139.0
+uvicorn==0.51.0
+python-multipart==0.0.32
+pydantic==2.13.4
 
 # ONNX inference
-onnxruntime
+onnxruntime==1.27.0
 # GPU 用户请将上行 onnxruntime 替换为 onnxruntime-gpu，不要同时安装两个包
 
 # Deep learning (ResNet-18 training & export)
-torch
-torchvision
+torch==2.13.0+cpu
+torchvision==0.28.0+cpu
 
 # Object detection & segmentation
-ultralytics
+ultralytics==8.4.93
 
 # Chinese-CLIP & Qwen2-VL
-transformers
-qwen-vl-utils
+transformers==5.13.1
+qwen-vl-utils==0.0.14
 
 # Image processing
-opencv-python
-Pillow
-numpy
+opencv-python==4.11.0.86
+Pillow==12.2.0
+numpy==1.26.4

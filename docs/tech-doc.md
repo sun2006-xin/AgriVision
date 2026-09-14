@@ -266,6 +266,12 @@ MQTT 发布器将 Paho `RuntimeError` 与其他发布失败统一纳入有界重
 
 阶段 45 为 `OfflineEventCache` 增加 `_event_paths_by_mtime()`，读取和 trim 均只处理普通 JSON 文件，并对 `stat()` 期间的文件系统竞态进行容错。这样临时文件、目录或并发删除不会破坏有效事件的读取、同步和容量清理。
 
+### 第一阶段：稳定可运行验收
+
+第一阶段统一 System A 使用 `system_a/models/yolov8n.pt`、System B 使用 `system_b/models/best.pt`；模型文件和缓存不随 Git 发布。`requirements-a.txt`、`requirements-b.txt`、`requirements-test.txt`、`requirements-mqtt.txt` 与 `requirements-ui-test.txt` 均采用精确版本锁定，Python 统一要求 3.10+，CI 使用 3.11。启动脚本通过锁定文件安装依赖。
+
+启动 System B 后，可运行 `python tools/api_smoke_phase1.py http://127.0.0.1:5000` 验收存活、就绪、参数元信息和非法参数拒绝；System B 到 System A 的深度诊断代理使用 multipart 字段 `file`，与 System A `/report` 的 `UploadFile(file=...)` 一致。
+
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
 ### 3.6 启动方式
@@ -307,7 +313,7 @@ start_a.bat
 cd system_a/core
 python -m venv ..\.venv --system-site-packages
 call ..\.venv\Scripts\activate
-pip install fastapi uvicorn python-multipart onnxruntime torch torchvision ultralytics transformers qwen-vl-utils opencv-python pillow numpy -i https://mirrors.aliyun.com/pypi/simple/
+pip install -r ../../requirements-a.txt -i https://mirrors.aliyun.com/pypi/simple/
 uvicorn app_fastapi:app --host 0.0.0.0 --port 8000
 ```
 
@@ -318,7 +324,7 @@ uvicorn app_fastapi:app --host 0.0.0.0 --port 8000
 | 文件 | 用途 | 获取方式 |
 |------|------|----------|
 | best_model.onnx | ResNet-18 12类分类 | 运行 train_classifier.py 训练后 convert_to_onnx.py 导出 |
-| yolov8n.pt | YOLOv8n 2类检测 | 自行训练 (参见 data.yaml) 或使用 ultralytics 预训练 |
+| best.pt | YOLOv8 2类检测 | System B 专用训练权重，放入 `system_b/models/` |
 | yolov8n-seg.pt | YOLOv8n-seg 分割 | `pip install ultralytics && yolo segment train ...` 或 ultralytics 预训练 |
 | hf_cache/ | Chinese-CLIP + Qwen2-VL | 首次启动自动从 HuggingFace 下载 (~2GB) |
 
@@ -332,7 +338,7 @@ start_b.bat
 cd system_b/core
 python -m venv ..\.venv
 call ..\.venv\Scripts\activate
-pip install flask opencv-python numpy requests ultralytics -i https://mirrors.aliyun.com/pypi/simple/
+pip install -r ../../requirements-b.txt -i https://mirrors.aliyun.com/pypi/simple/
 python app.py
 ```
 

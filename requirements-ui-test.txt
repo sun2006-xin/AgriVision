@@ -1,2 +1,2 @@
 # Optional browser smoke-test dependency; not required by production services.
-playwright
+playwright==1.62.0

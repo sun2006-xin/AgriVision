@@ -52,6 +52,8 @@ jobs:
           curl --fail --retry 30 --retry-delay 1 --retry-connrefused http://127.0.0.1:5000/ -o /dev/null
       - name: Run browser smoke
         run: python tools/browser_smoke_event_status.py
+      - name: Run Phase 1 API smoke
+        run: python tools/api_smoke_phase1.py http://127.0.0.1:5000
       - name: Stop System B
         if: always()
         run: |

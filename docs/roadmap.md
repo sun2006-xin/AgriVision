@@ -4,13 +4,16 @@
 
 AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实时病虫害筛查、历史记录、告警通知，到多模型辅助诊断报告的开源实验平台。System A 负责图片诊断，System B 负责现场监控；两者通过 REST API 松耦合集成。
 
-## 阶段 1：可运行性与安全基线（已完成）
+## 阶段 1：稳定可运行（已完成）
 
 - 修复 System B → System A `/report` 的 multipart 字段契约。
 - 参数写入经过白名单、类型、有限值和范围校验。
 - 默认 CORS 收敛到本机 A/B 前端来源。
 - 增加接口契约和配置边界回归测试。
-- 验收：`python -m unittest tests.test_stage1_contracts -v` 通过。
+- 锁定生产、测试、MQTT 和浏览器依赖版本；启动脚本统一从 requirements 文件安装。
+- 统一文档中的模型职责：System A 使用 `yolov8n.pt`，System B 使用 `best.pt`；模型权重不进入 Git。
+- 增加 `tools/api_smoke_phase1.py`，运行时验证 System B 存活、就绪、参数元信息和非法参数拒绝，并接入公开 CI。
+- 验收：本机真实 API 冒烟通过，完整测试、源码解析、隐私扫描和公开 CI 通过。
 
 ## 阶段 2：工程化与可观测性（已完成基础项）
 

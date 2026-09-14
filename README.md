@@ -93,6 +93,11 @@ pip install -r requirements-a.txt
 
 # System B
 pip install -r requirements-b.txt
+
+# 可选：本地测试、MQTT 和浏览器冒烟依赖
+pip install -r requirements-test.txt
+pip install -r requirements-mqtt.txt
+pip install -r requirements-ui-test.txt
 ```
 
 ### 3. 准备模型文件
@@ -109,7 +114,9 @@ system_b/models/
 └── yolov8n-seg.pt           # YOLOv8n-seg 分割模型 (COCO预训练)
 ```
 
-> **提示**：ResNet-18 模型可通过 `system_a/core/train_classifier.py` 自行训练，或使用 `convert_to_onnx.py` 从 `.pth` 导出 ONNX。
+> **提示**：模型权重默认不进入 Git 仓库（由 `.gitignore` 排除），需自行训练或按部署说明准备；System A 使用 `best_model.onnx` / `yolov8n.pt`，System B 使用 `best.pt`。ResNet-18 模型可通过 `system_a/core/train_classifier.py` 自行训练，或使用 `convert_to_onnx.py` 从 `.pth` 导出 ONNX。
+
+依赖文件已使用 `==` 固定版本；Python 统一为 3.10+，公开 CI 使用 Python 3.11。启动脚本会直接安装对应的锁定文件，不再使用无版本安装清单。
 
 ### 4. 启动服务
 

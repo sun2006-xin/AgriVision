@@ -13,7 +13,7 @@ if not exist "..\.venv\Scripts\activate" (
     python -m venv --system-site-packages ..\.venv
     echo [Init] venv created, installing dependencies...
     call ..\.venv\Scripts\activate
-    pip install fastapi uvicorn python-multipart pydantic onnxruntime torch torchvision ultralytics transformers qwen-vl-utils opencv-python pillow numpy -i https://mirrors.aliyun.com/pypi/simple/
+    pip install -r "%~dp0requirements-a.txt" -i https://mirrors.aliyun.com/pypi/simple/
     echo [Init] Dependencies installed!
 ) else (
     call ..\.venv\Scripts\activate
