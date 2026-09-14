@@ -298,13 +298,15 @@ def _validate_provenance_fields(record, require_provenance=False):
 
 
 def _validate_record(record, labels=None, require_metadata=False, require_id=False,
-                     require_provenance=False):
+                     require_provenance=False, require_predictions=True):
     if not isinstance(record, dict):
         raise ValueError("each record must be a JSON object")
     unknown = sorted(set(record) - _RECORD_FIELDS)
     if unknown:
         raise ValueError("unknown record field: " + unknown[0])
-    required = {"true", "pred", "confidence"}
+    required = {"true"}
+    if require_predictions:
+        required.update({"pred", "confidence"})
     if require_id:
         required.add("id")
     if require_metadata:
@@ -313,11 +315,12 @@ def _validate_record(record, labels=None, require_metadata=False, require_id=Fal
     if missing:
         raise ValueError("record is missing required field: " + missing[0])
     for field in ("true", "pred"):
-        if not isinstance(record[field], str) or not record[field].strip():
+        if field in record and (not isinstance(record[field], str) or not record[field].strip()):
             raise ValueError(f"{field} must be a non-empty string")
-    confidence = _finite(record["confidence"], "confidence")
-    if not 0.0 <= confidence <= 1.0:
-        raise ValueError("confidence must be between 0 and 1")
+    if "confidence" in record:
+        confidence = _finite(record["confidence"], "confidence")
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError("confidence must be between 0 and 1")
     if "id" in record and (
         not isinstance(record["id"], str) or not record["id"].strip()
         or len(record["id"]) > 128 or "/" in record["id"] or "\\" in record["id"]
@@ -355,7 +358,8 @@ def _validate_record(record, labels=None, require_metadata=False, require_id=Fal
     _validate_provenance_fields(record, require_provenance=require_provenance)
 
 
-def validate_manifest(payload, require_metadata=True, require_provenance=False):
+def validate_manifest(payload, require_metadata=True, require_provenance=False,
+                      require_predictions=True):
     """Validate and return a JSON-safe evaluation manifest copy.
 
     Strict manifests require crop, lighting, device, source and split for
@@ -395,8 +399,11 @@ def validate_manifest(payload, require_metadata=True, require_provenance=False):
             require_metadata=require_metadata,
             require_id=True,
             require_provenance=require_provenance,
+            require_predictions=require_predictions,
         )
-        if record["true"] not in labels or record["pred"] not in labels:
+        if record["true"] not in labels or (
+            "pred" in record and record["pred"] not in labels
+        ):
             raise ValueError("record labels must be declared in manifest labels")
         if record["id"] in seen_ids:
             raise ValueError("record ids must be unique")

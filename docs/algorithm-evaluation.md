@@ -61,7 +61,7 @@ python tools/audit_evaluation_dataset.py path/to/manifest.json \
   --output evaluation-audit.json
 ```
 
-审计器会输出按作物、病害、光照、设备、来源和切分的样本覆盖，以及缺失文件、非普通文件和 SHA-256 不匹配列表。结构错误退出码为 `2`，文件审计失败为 `1`，全部通过为 `0`。
+审计器会输出按作物、病害、光照、设备、来源和切分的样本覆盖，以及缺失文件、非普通文件、超过 10 MB 文件和 SHA-256 不匹配列表。生成器在初次审计后还会对实际送入模型的字节再次验哈希，避免文件竞态造成“旧哈希、新内容”。结构错误退出码为 `2`，文件审计失败为 `1`，全部通过为 `0`。
 
 ## 运行评估
 
@@ -73,6 +73,25 @@ python system_a/core/evaluate_predictions.py \
 ```
 
 拿到真实图片后，在上面的命令中追加 `--check-files --image-root path/to/dataset`，评估会在计算指标前阻止缺图或错哈希输入。
+
+### 从真实图片生成预测清单
+
+标注清单可以先省略 `pred`、`confidence` 和 `probabilities`，保留 `true` 及全部 provenance 字段。当前 System A 分类器的离线 runner 会复用线上相同的 224×224/ImageNet 预处理、12 类顺序和 softmax 逻辑：
+
+```bash
+python tools/generate_prediction_manifest.py \
+  path/to/labeled-manifest.json \
+  --image-root path/to/dataset \
+  --model system_a/models/best_model.onnx \
+  --output predictions.json
+
+python system_a/core/evaluate_predictions.py predictions.json \
+  --strict-metadata --strict-provenance \
+  --check-files --image-root path/to/dataset \
+  --healthy-label 健康
+```
+
+runner 会先比较清单中的 `model.weights_sha256` 与实际模型文件，再逐张图片校验 SHA-256 后推理；类别数量或顺序不匹配会直接失败。当前内置分类器的类别顺序见 `classifier_inference.py`，自定义模型必须显式扩展该契约，不能静默复用错误映射。
 
 输出包括：
 

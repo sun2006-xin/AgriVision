@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -160,6 +161,21 @@ class Phase5EvaluationProvenanceTests(unittest.TestCase):
         self.assertFalse(report["valid"])
         self.assertEqual(report["file_checks"]["hash_mismatch"], ["sample-001"])
         self.assertEqual(report["file_checks"]["missing"], ["sample-002"])
+
+    def test_audit_rejects_files_above_classifier_input_bound(self):
+        from dataset_audit import audit_manifest
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            (root / "images").mkdir()
+            content = b"too large for this bound"
+            (root / "images" / "sample-001.jpg").write_bytes(content)
+            manifest = _manifest([_record(digest=_sha256(content))])
+            with patch("dataset_audit.MAX_AUDIT_FILE_BYTES", 1):
+                report = audit_manifest(manifest, image_root=root, verify_files=True)
+
+        self.assertFalse(report["valid"])
+        self.assertEqual(report["file_checks"]["too_large"], ["sample-001"])
 
     def test_audit_cli_emits_machine_readable_report(self):
         with tempfile.TemporaryDirectory() as directory:

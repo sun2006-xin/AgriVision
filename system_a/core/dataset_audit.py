@@ -7,12 +7,26 @@ from pathlib import Path
 from evaluation import SLICE_DIMENSIONS, validate_manifest
 
 
+MAX_AUDIT_FILE_BYTES = 10 * 1024 * 1024
+
+
 def _sha256(path):
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def resolve_image_path(image_root, image):
+    """Resolve a validated manifest path without allowing root escape."""
+    root = Path(image_root).resolve()
+    candidate = (root / image).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        raise ValueError("image resolves outside image_root") from None
+    return candidate
 
 
 def _coverage(records):
@@ -40,20 +54,20 @@ def audit_manifest(payload, image_root=None, verify_files=False):
         payload,
         require_metadata=True,
         require_provenance=True,
+        require_predictions=False,
     )
     records = manifest["records"]
     missing = []
     hash_mismatch = []
     not_regular = []
     outside_root = []
+    too_large = []
     checked = 0
 
     if verify_files:
-        root = Path(image_root).resolve()
         for record in records:
-            candidate = (root / record["image"]).resolve()
             try:
-                candidate.relative_to(root)
+                candidate = resolve_image_path(image_root, record["image"])
             except ValueError:
                 outside_root.append(record["id"])
                 continue
@@ -62,6 +76,9 @@ def audit_manifest(payload, image_root=None, verify_files=False):
                 continue
             if not candidate.is_file():
                 not_regular.append(record["id"])
+                continue
+            if candidate.stat().st_size > MAX_AUDIT_FILE_BYTES:
+                too_large.append(record["id"])
                 continue
             checked += 1
             if _sha256(candidate) != record["image_sha256"]:
@@ -75,8 +92,9 @@ def audit_manifest(payload, image_root=None, verify_files=False):
         "hash_mismatch": hash_mismatch,
         "not_regular": not_regular,
         "outside_root": outside_root,
+        "too_large": too_large,
     }
-    valid = not any((missing, hash_mismatch, not_regular, outside_root))
+    valid = not any((missing, hash_mismatch, not_regular, outside_root, too_large))
     return {
         "valid": valid,
         "contract": {

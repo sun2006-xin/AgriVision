@@ -34,7 +34,6 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 from PIL import Image
 import io
-import torchvision.transforms as transforms
 from ultralytics import YOLO
 from transformers import (
     ChineseCLIPModel, ChineseCLIPProcessor,
@@ -46,7 +45,8 @@ from database import (
     create_task, get_task, update_task,
     cache_get, cache_set, clear_cache,
 )
-from evaluation import assess_confidence, assess_probability_vector
+from classifier_inference import CLASS_NAMES, predict_classifier
+from evaluation import assess_probability_vector
 from security import ApiSecurity
 
 # ======================== 路径配置 ========================
@@ -129,21 +129,6 @@ CLIP_TEXTS = [
     "番茄叶片出现黄绿相间的花叶斑驳，叶片皱缩畸形，生长缓慢",             # [11] tomato_mosaic_virus
 ]
 
-CLASS_NAMES = [
-    "苹果黑星病",          # [0] apple_scab
-    "玉米灰斑病",          # [1] corn_gray_leaf_spot
-    "玉米叶枯病",          # [2] corn_leaf_blight
-    "玉米锈病",            # [3] corn_rust
-    "健康",                # [4] healthy
-    "马铃薯早疫病",         # [5] potato_early_blight
-    "马铃薯晚疫病",         # [6] potato_late_blight
-    "南瓜白粉病",          # [7] squash_powdery_mildew
-    "番茄细菌性斑点病",     # [8] tomato_bacterial_spot
-    "番茄早疫病",          # [9] tomato_early_blight
-    "番茄晚疫病",          # [10] tomato_late_blight
-    "番茄花叶病毒病",       # [11] tomato_mosaic_virus
-]
-
 # 预计算 CLIP 文本嵌入（启动时一次性计算，避免每次请求重复计算）
 with torch.no_grad():
     text_inputs = clip_processor(text=CLIP_TEXTS, return_tensors="pt", padding=True)
@@ -178,13 +163,6 @@ def get_llm():
     return _llm_model, _llm_processor
 
 
-# ======================== 图片预处理 ========================
-transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-])
-
 # ======================== 文件安全校验 ========================
 MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
 ALLOWED_MAGIC = [b"\xff\xd8\xff", b"\x89PNG", b"GIF8"]
@@ -206,12 +184,6 @@ def validate_image(contents: bytes):
     img = Image.open(io.BytesIO(contents))
     if max(img.width, img.height) > MAX_DIMENSION:
         raise HTTPException(400, f"图片分辨率过高，最大边不超过 {MAX_DIMENSION}px")
-
-
-def preprocess_image(image_bytes: bytes):
-    """字节流 → 模型输入 Tensor"""
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    return transform(img).unsqueeze(0).numpy()
 
 
 # ======================== Pydantic 响应模型 ========================
@@ -362,25 +334,21 @@ app.add_middleware(
 # ======================== 工具函数 ========================
 def run_predict(contents: bytes) -> dict:
     """ONNX 分类推理"""
-    tensor = preprocess_image(contents)
-    raw = ort_session.run([output_name], {input_name: tensor})[0]
-    scores = np.asarray(raw[0], dtype=np.float64)
-    shifted = scores - np.max(scores)
-    exp = np.exp(shifted)
-    probs = exp / exp.sum()
-    idx = int(np.argmax(probs))
-    confidence = round(float(probs[idx]), 4)
-    probability_map = {c: float(p) for c, p in zip(CLASS_NAMES, probs)}
-    confidence_info = assess_probability_vector(
-        probability_map,
+    prediction = predict_classifier(
+        ort_session,
+        contents,
+        class_names=CLASS_NAMES,
+        input_name=input_name,
+        output_name=output_name,
         threshold=UNCERTAINTY_THRESHOLD,
         margin_threshold=UNCERTAINTY_MARGIN_THRESHOLD,
         entropy_threshold=UNCERTAINTY_ENTROPY_THRESHOLD,
         ood_max_probability=OOD_MAX_PROBABILITY,
     )
+    confidence_info = prediction["confidence_info"]
     return {
-        "class": CLASS_NAMES[idx],
-        "confidence": confidence,
+        "class": prediction["class"],
+        "confidence": prediction["confidence"],
         "uncertain": confidence_info["uncertain"],
         "undetermined": confidence_info["undetermined"],
         "abstain": confidence_info["abstain"],
@@ -389,7 +357,10 @@ def run_predict(contents: bytes) -> dict:
         "ood_suspected": confidence_info["ood_suspected"],
         "uncertainty_reason": confidence_info["uncertainty_reason"],
         "confidence_semantics": "uncalibrated_softmax_score",
-        "probabilities": {c: round(float(p), 4) for c, p in probability_map.items()},
+        "probabilities": {
+            label: round(float(probability), 4)
+            for label, probability in prediction["probabilities"].items()
+        },
     }
 
 

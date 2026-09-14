@@ -220,7 +220,7 @@ System B 以 `app.py` 作为依赖组装入口，业务边界分别位于以下�
 
 System A 使用 `system_a/core/security.py` 实施同一 token 环境变量约定；标准启动脚本为 `deploy/start_system_a.ps1` 和 `deploy/start_system_b.ps1`。
 
-算法评估和现场闭环的严格清单格式、分层指标、校准、OOD/不确定性边界及真实数据验收要求见 [docs/algorithm-evaluation.md](algorithm-evaluation.md)。拿到真实数据后，先用 `tools/audit_evaluation_dataset.py --check-files` 校验图片路径和 SHA-256，再使用评估 CLI 的 `--strict-provenance` 生成报告；当前仓库的示例仍是占位数据。
+算法评估和现场闭环的严格清单格式、分层指标、校准、OOD/不确定性边界及真实数据验收要求见 [docs/algorithm-evaluation.md](algorithm-evaluation.md)。拿到真实数据后，先用 `tools/audit_evaluation_dataset.py --check-files` 校验图片路径和 SHA-256，再用 `tools/generate_prediction_manifest.py` 复用线上分类器生成预测，最后使用评估 CLI 的 `--strict-provenance` 生成报告；当前仓库的示例仍是占位数据。
 
 System B 路由 Blueprint、参数边界、任务生命周期和远程媒体认证的收口说明见 [docs/architecture-hardening.md](architecture-hardening.md)。
 
