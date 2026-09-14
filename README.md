@@ -229,6 +229,8 @@ AgriVision/
 
 阶段 41 已为离线事件缓存增加单条大小保护，超限事件会在写入前被拒绝，避免边界情况下静默丢失已有事件。
 
+阶段 42 已为 HTTP、MQTT 和离线事件查询增加统一隐私白名单，未知 URL、凭据、图片路径和 payload 字段不会被外发。
+
 公开发布门禁已在 GitHub Actions 对提交 `1c68338` 验证通过：[查看 CI 运行记录](https://github.com/sun2006-xin/AgriVision/actions/runs/34762246684)。
 
 MQTT 契约测试也已在 GitHub Actions 对提交 `de89384` 验证通过：[查看 MQTT CI 运行记录](https://github.com/sun2006-xin/AgriVision/actions/runs/34762437681)。这不代表真实 broker 或 ESP32 已完成联调。

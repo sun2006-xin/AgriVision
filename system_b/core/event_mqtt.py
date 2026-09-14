@@ -8,6 +8,10 @@ try:
     from .event_transport import build_batch_idempotency_key
 except ImportError:
     from event_transport import build_batch_idempotency_key
+try:
+    from .event_schema import project_event
+except ImportError:
+    from event_schema import project_event
 
 
 _SAFE_TOPIC = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
@@ -28,7 +32,7 @@ def validate_mqtt_topic(topic):
 
 def build_mqtt_payload(events):
     """Serialize a versioned batch without images, URLs, or credentials."""
-    events = list(events)
+    events = [project_event(event) for event in events]
     return json.dumps(
         {
             "schema_version": 1,
@@ -55,7 +59,7 @@ class MqttEventTransport:
         self.backoff_seconds = backoff_seconds
 
     def sync(self, events, acknowledge):
-        events = list(events)
+        events = [project_event(event) for event in events]
         if not events:
             return {"sent": 0, "attempts": 0}
 

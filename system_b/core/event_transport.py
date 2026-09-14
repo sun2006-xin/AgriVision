@@ -6,6 +6,11 @@ import requests
 from time import sleep
 from urllib.parse import urlparse
 
+try:
+    from .event_schema import project_event
+except ImportError:
+    from event_schema import project_event
+
 
 def validate_sink_url(url):
     """Allow HTTPS sinks; allow HTTP only for local development endpoints."""
@@ -38,6 +43,7 @@ def build_batch_idempotency_key(events):
 
 def send_events_http(url, events):
     """Send one privacy-safe event batch over HTTP(S)."""
+    events = [project_event(event) for event in events]
     response = requests.post(
         url,
         json={"schema_version": 1, "events": events},
@@ -60,7 +66,7 @@ class EventTransport:
 
     def sync(self, events, acknowledge):
         """Send one bounded batch and acknowledge events only after 2xx success."""
-        events = list(events)
+        events = [project_event(event) for event in events]
         if not events:
             return {"sent": 0, "attempts": 0}
 

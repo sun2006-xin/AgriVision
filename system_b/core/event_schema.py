@@ -8,6 +8,29 @@ import uuid
 
 SCHEMA_VERSION = 1
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._:-]{1,64}$")
+_EVENT_FIELDS = {"schema_version", "event_id", "created_at", "camera_id", "payload"}
+_PAYLOAD_FIELDS = {
+    "level",
+    "level_code",
+    "disease_count",
+    "white_count",
+    "disease_ratio",
+    "white_ratio",
+    "green_ratio",
+}
+
+
+def project_event(event):
+    """Return only the versioned, non-credential event contract fields."""
+    if not isinstance(event, dict):
+        raise ValueError("event must be a JSON object")
+    projected = {key: event[key] for key in _EVENT_FIELDS if key in event}
+    payload = event.get("payload")
+    if isinstance(payload, dict):
+        projected["payload"] = {
+            key: payload[key] for key in _PAYLOAD_FIELDS if key in payload
+        }
+    return projected
 
 
 def build_detection_event(camera_id, result):

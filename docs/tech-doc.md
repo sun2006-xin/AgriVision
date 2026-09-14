@@ -258,6 +258,8 @@ MQTT 发布器将 Paho `RuntimeError` 与其他发布失败统一纳入有界重
 
 阶段 41 为 `OfflineEventCache.put()` 增加单条事件字节上限预检：事件先以紧凑 UTF-8 JSON 序列化，再与 `max_bytes` 比较，超限即抛出固定 `ValueError`。检查发生在临时文件创建前，因此不会覆盖旧事件，也不会依赖后置 trim 来处理单条超限数据。
 
+阶段 42 增加 `event_schema.project_event()` 作为统一外发白名单。HTTP `EventTransport`、MQTT `MqttEventTransport`/载荷构造器以及 `/api/offline_events` 查询均先投影事件，只传输协议规定的字段；未知顶层字段和 payload 字段被丢弃，避免旧缓存或篡改缓存把 URL、凭据、图片路径等信息带出系统。
+
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
 ### 3.6 启动方式

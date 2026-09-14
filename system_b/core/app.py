@@ -134,7 +134,7 @@ from dual_verifier import DualVerifier                  # 双引擎验证融合�
 from alert_notifier import get_notifier                 # 智能告警通知器
 from health import build_service_health, summarize_camera
 from observability import resolve_request_id
-from event_schema import build_detection_event
+from event_schema import build_detection_event, project_event
 from offline_cache import OfflineEventCache
 from event_transport import EventTransport, send_events_http
 from mqtt_runtime import create_paho_transport
@@ -2565,7 +2565,8 @@ def api_sync_status():
 def api_offline_events():
     """Return bounded detection events waiting for a future transport worker."""
     events = offline_event_cache.list_pending()
-    return jsonify({"count": len(events), "events": events})
+    safe_events = [project_event(event) for event in events if isinstance(event, dict)]
+    return jsonify({"count": len(safe_events), "events": safe_events})
 
 
 @app.route('/api/offline_events/ack', methods=['POST'])
