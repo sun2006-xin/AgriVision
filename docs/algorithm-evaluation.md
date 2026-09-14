@@ -97,8 +97,10 @@ runner 会先比较清单中的 `model.weights_sha256` 与实际模型文件，�
 
 - Overall Accuracy、宏/加权 Precision、Recall、F1 和固定标签顺序的混淆矩阵。
 - `slices.crop`、`slices.disease`、`slices.lighting`、`slices.device`、`slices.source`、`slices.split`，每个切片都带支持数和分类指标。
+- `robustness.lighting` 和 `robustness.device` 汇总每个切片的支持数、Accuracy、宏 F1、最差切片及指标 gap；这是非配对切片比较，不等同于同一对象的跨光照/跨设备实验。
 - `calibration.reliability_bins`、ECE 和 Brier score。ECE 只表示提交的置信度与标签的一致程度，不表示模型已经完成校准。
 - `field_error_rates` 中的 FP、FN、误报率、漏报率、现场二值 Precision/Recall；没有现场记录或二值定义时 `available=false`，不会填入伪造的 0。
+- `field_threshold_curve` 在有完整概率向量时输出多个运营阈值下的 FP/FN/FPR/FNR；可用 `--field-thresholds 0.35,0.55,0.75` 覆盖默认阈值，不能把单一阈值结果当成业务验收。
 
 不带 `--strict-metadata` 仍可读取旧版 `true/pred/confidence` 清单，便于迁移；旧格式的切片会落入 `unknown`，不能作为完整现场评估报告。
 

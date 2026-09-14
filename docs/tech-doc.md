@@ -462,6 +462,6 @@ set HF_ENDPOINT=https://hf-mirror.com
 | 边缘 + 云端 | ESP32-CAM 本地采集 → System B 实时分析 → System A 可部署服务器远程诊断 |
 | 模型部署 | ONNX Runtime (GPU 自动检测)、YOLOv8 推理、Chinese-CLIP 零样本、Qwen2-VL 本地 LLM |
 | 实时系统 | 多线程检测 + 每摄像头 TemporalFusion 时序融合 + MJPEG 视频流 |
-| 算法证据 | 分层混淆矩阵、ECE/Brier、现场 FP/FN、OOD/不确定状态、数据与模型 provenance 审计；真实标注集指标待验收 |
+| 算法证据 | 分层混淆矩阵、ECE/Brier、跨光照/设备 gap、现场 FP/FN 阈值曲线、OOD/不确定状态、数据与模型 provenance 审计；真实标注集指标待验收 |
 | 工程化 | 配置热更新、SQLite 历史、异步任务、MD5 缓存、钉钉告警、SD 卡同步 |
 | 可扩展 | 多摄像头框架、动态添加/删除、配置驱动、A-B 浅连接 |

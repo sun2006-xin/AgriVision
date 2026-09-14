@@ -25,6 +25,8 @@ _REQUIRED_DATASET_FIELDS = ("name", "version", "label_policy")
 _ALLOWED_SPLITS = {"train", "validation", "test"}
 _ALLOWED_ANNOTATION_STATUSES = {"verified", "adjudicated"}
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+DEFAULT_FIELD_THRESHOLDS = (0.25, 0.40, 0.55, 0.70, 0.85)
+ROBUSTNESS_DIMENSIONS = ("lighting", "device")
 
 
 def _safe_ratio(numerator, denominator):
@@ -441,6 +443,45 @@ def _resolve_healthy_label(labels, healthy_label):
     return None
 
 
+def _binary_metrics(pairs):
+    true_positive = sum(truth and prediction for truth, prediction in pairs)
+    false_positive = sum(not truth and prediction for truth, prediction in pairs)
+    false_negative = sum(truth and not prediction for truth, prediction in pairs)
+    true_negative = sum(not truth and not prediction for truth, prediction in pairs)
+    positive_support = true_positive + false_negative
+    negative_support = true_negative + false_positive
+    return {
+        "true_positive": true_positive,
+        "false_positive": false_positive,
+        "false_negative": false_negative,
+        "true_negative": true_negative,
+        "positive_support": positive_support,
+        "negative_support": negative_support,
+        "false_positive_rate": _safe_ratio(false_positive, negative_support),
+        "false_negative_rate": _safe_ratio(false_negative, positive_support),
+        "precision": _safe_ratio(true_positive, true_positive + false_positive),
+        "recall": _safe_ratio(true_positive, positive_support),
+        "accuracy": _safe_ratio(true_positive + true_negative, len(pairs)),
+    }
+
+
+def _validated_thresholds(thresholds):
+    values = list(DEFAULT_FIELD_THRESHOLDS if thresholds is None else thresholds)
+    if not values:
+        raise ValueError("thresholds must contain at least one value")
+    normalized = []
+    for threshold in values:
+        if isinstance(threshold, bool):
+            raise ValueError("thresholds must be numeric values between 0 and 1")
+        threshold = _finite(threshold, "threshold")
+        if not 0.0 <= threshold <= 1.0:
+            raise ValueError("thresholds must be between 0 and 1")
+        normalized.append(threshold)
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("thresholds must be unique")
+    return sorted(normalized)
+
+
 def field_error_rates(records, healthy_label=None, positive_label=None):
     """Calculate field-screening false-positive and false-negative rates.
 
@@ -478,31 +519,94 @@ def field_error_rates(records, healthy_label=None, positive_label=None):
             prediction = record["pred"] != healthy_label
         pairs.append((bool(truth), bool(prediction)))
 
-    true_positive = sum(truth and prediction for truth, prediction in pairs)
-    false_positive = sum(not truth and prediction for truth, prediction in pairs)
-    false_negative = sum(truth and not prediction for truth, prediction in pairs)
-    true_negative = sum(not truth and not prediction for truth, prediction in pairs)
-    positive_support = true_positive + false_negative
-    negative_support = true_negative + false_positive
+    metrics = _binary_metrics(pairs)
     result.update({
         "available": True,
         "positive_label": positive_label or f"非{healthy_label}",
         "healthy_label": healthy_label,
         "sample_count": len(pairs),
-        "true_positive": true_positive,
-        "false_positive": false_positive,
-        "false_negative": false_negative,
-        "true_negative": true_negative,
-        "positive_support": positive_support,
-        "negative_support": negative_support,
-        "false_positive_rate": _safe_ratio(false_positive, negative_support),
-        "false_negative_rate": _safe_ratio(false_negative, positive_support),
-        "precision": _safe_ratio(true_positive, true_positive + false_positive),
-        "recall": _safe_ratio(true_positive, positive_support),
-        "accuracy": _safe_ratio(true_positive + true_negative, len(pairs)),
+        **metrics,
     })
     result.pop("reason", None)
     return result
+
+
+def field_threshold_curve(records, healthy_label=None, positive_label=None, thresholds=None):
+    """Measure field FP/FN trade-offs at probability thresholds.
+
+    The curve is available only when every record has a complete probability
+    vector.  This keeps argmax labels from being misrepresented as threshold
+    evidence.
+    """
+    records = list(records)
+    result = {
+        "available": False,
+        "sample_count": len(records),
+        "reason": "需要每条记录的完整 probabilities 向量",
+    }
+    if not records:
+        result["reason"] = "没有 source=field 的记录"
+        return result
+    if not all(isinstance(record.get("probabilities"), dict) for record in records):
+        return result
+
+    labels = sorted({record.get("true") for record in records if isinstance(record.get("true"), str)})
+    healthy_label = _resolve_healthy_label(labels, healthy_label)
+    if positive_label is not None:
+        if positive_label not in labels:
+            result["reason"] = "positive_label 不在记录标签中"
+            return result
+        score_name = positive_label
+    else:
+        if healthy_label is None:
+            result["reason"] = "需要 healthy_label 或 positive_label"
+            return result
+        score_name = f"非{healthy_label}"
+
+    scored = []
+    for record in records:
+        probabilities = record["probabilities"]
+        if positive_label is not None:
+            if positive_label not in probabilities:
+                result["reason"] = "probabilities 缺少 positive_label"
+                return result
+            score = probabilities[positive_label]
+            truth = (
+                bool(record["field_true"])
+                if "field_true" in record
+                else record["true"] == positive_label
+            )
+        else:
+            if healthy_label not in probabilities:
+                result["reason"] = "probabilities 缺少 healthy_label"
+                return result
+            score = 1.0 - probabilities[healthy_label]
+            truth = (
+                bool(record["field_true"])
+                if "field_true" in record
+                else record["true"] != healthy_label
+            )
+        score = _finite(score, "positive probability")
+        if not 0.0 <= score <= 1.0:
+            raise ValueError("positive probability must be between 0 and 1")
+        scored.append((truth, score))
+
+    curve = []
+    for threshold in _validated_thresholds(thresholds):
+        metrics = _binary_metrics([
+            (truth, score >= threshold) for truth, score in scored
+        ])
+        metrics["threshold"] = threshold
+        curve.append(metrics)
+    return {
+        "available": True,
+        "sample_count": len(scored),
+        "healthy_label": healthy_label,
+        "positive_label": positive_label or f"非{healthy_label}",
+        "score": "probability_of_positive" if positive_label else "probability_of_non_healthy",
+        "thresholds": curve,
+        "interpretation": "阈值敏感性分析，不代表已完成业务阈值验收",
+    }
 
 
 def _group_summary(records, labels, bins):
@@ -516,8 +620,43 @@ def _group_summary(records, labels, bins):
     return metrics
 
 
+def slice_robustness(records, labels, bins=10, dimensions=ROBUSTNESS_DIMENSIONS):
+    """Summarize unpaired metric gaps across lighting and device slices."""
+    records = list(records)
+    labels = _validate_labels(labels)
+    result = {}
+    for dimension in dimensions:
+        grouped = defaultdict(list)
+        for record in records:
+            grouped[str(record.get(dimension, "unknown"))].append(record)
+        summaries = {
+            value: _group_summary(group, labels, bins)
+            for value, group in sorted(grouped.items())
+        }
+        entries = list(summaries.items())
+        accuracy_values = [summary["accuracy"] for _, summary in entries]
+        f1_values = [summary["macro_f1"] for _, summary in entries]
+        best_accuracy = max(entries, key=lambda item: (item[1]["accuracy"], item[0])) if entries else None
+        worst_accuracy = min(entries, key=lambda item: (item[1]["accuracy"], item[0])) if entries else None
+        result[dimension] = {
+            "comparable": len(entries) >= 2,
+            "slice_count": len(entries),
+            "support": {value: summary["support"] for value, summary in entries},
+            "accuracy_by_slice": {value: summary["accuracy"] for value, summary in entries},
+            "macro_f1_by_slice": {value: summary["macro_f1"] for value, summary in entries},
+            "accuracy_gap": max(accuracy_values) - min(accuracy_values) if entries else 0.0,
+            "macro_f1_gap": max(f1_values) - min(f1_values) if entries else 0.0,
+            "best_slice": best_accuracy[0] if best_accuracy else None,
+            "worst_slice": worst_accuracy[0] if worst_accuracy else None,
+            "interpretation": "unpaired slice comparison; not a paired lighting or device transfer experiment",
+        }
+        if len(entries) < 2:
+            result[dimension]["reason"] = "至少需要两个不同切片才能比较差异"
+    return result
+
+
 def evaluate_records(records, labels, bins=10, healthy_label=None, positive_label=None,
-                     field_source="field"):
+                     field_source="field", field_thresholds=None):
     """Evaluate records and return overall, slice and field-screening metrics.
 
     This function retains compatibility with the original three-column
@@ -538,6 +677,12 @@ def evaluate_records(records, labels, bins=10, healthy_label=None, positive_labe
     result["field_error_rates"] = field_error_rates(
         field_records, healthy_label=healthy_label, positive_label=positive_label
     )
+    result["field_threshold_curve"] = field_threshold_curve(
+        field_records,
+        healthy_label=healthy_label,
+        positive_label=positive_label,
+        thresholds=field_thresholds,
+    )
 
     slices = {}
     for dimension in SLICE_DIMENSIONS:
@@ -550,11 +695,12 @@ def evaluate_records(records, labels, bins=10, healthy_label=None, positive_labe
             for value, group in sorted(grouped.items())
         }
     result["slices"] = slices
+    result["robustness"] = slice_robustness(records, labels, bins=bins)
     return result
 
 
 def evaluate_manifest(payload, bins=10, healthy_label=None, positive_label=None,
-                      field_source="field", require_provenance=False):
+                      field_source="field", require_provenance=False, field_thresholds=None):
     """Strictly validate and evaluate a metadata-complete manifest."""
     manifest = validate_manifest(
         payload,
@@ -565,6 +711,7 @@ def evaluate_manifest(payload, bins=10, healthy_label=None, positive_label=None,
         manifest["records"], manifest["labels"], bins=bins,
         healthy_label=healthy_label, positive_label=positive_label,
         field_source=field_source,
+        field_thresholds=field_thresholds,
     )
     result["manifest"] = {
         "schema_version": manifest["schema_version"],

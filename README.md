@@ -230,6 +230,7 @@ AgriVision/
 - `system_a/core/evaluate_predictions.py` 支持严格 JSON 清单：按作物、病害、光照、设备、来源和切分输出分类指标与混淆矩阵；`--strict-provenance` 进一步要求数据集/模型身份、样本 SHA-256、采集组和已复核标注。
 - 输出 ECE、可靠性分箱和 Brier score；没有完整概率向量时会明确标记为 `top1`，不会把未校准分数包装成概率。
 - 对 `source=field` 的记录输出现场二值误报/漏报统计；缺少现场样本或二值定义时返回 `available=false`，不填伪造的零。
+- 输出 `robustness.lighting/device` 的非配对切片差距和 `field_threshold_curve` 阈值 FP/FN 曲线，辅助发现低光照/设备退化与运营阈值风险。
 - System A 返回 `known`、`uncertain`、`undetermined`、`ood_suspected`、`abstain` 及原因；System B 使用每摄像头独立的衰减加权多帧融合，并保留可审计证据。
 - 使用真实图片时，可先用 `tools/generate_prediction_manifest.py` 复用线上分类预处理生成预测清单，再运行严格评估；当前仓库没有公开真实标注集，示例结果不代表模型性能。
 
