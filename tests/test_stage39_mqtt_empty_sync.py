@@ -19,9 +19,9 @@ class Stage39MqttEmptySyncTests(unittest.TestCase):
         self.assertEqual(snapshot["batches_failed"], 0)
 
     def test_manual_route_handles_empty_queue_before_publishing(self):
-        source = (ROOT / "system_b" / "core" / "app.py").read_text(encoding="utf-8")
+        source = (ROOT / "system_b" / "core" / "routes" / "events.py").read_text(encoding="utf-8")
         start = source.index("def api_offline_events_sync_mqtt")
-        end = source.index("@app.route('/api/offline_events/sync_status')", start)
+        end = source.index('@blueprint.get("/api/offline_events/sync_status")', start)
         route = source[start:end]
 
         self.assertIn("if not events:", route)

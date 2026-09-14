@@ -218,11 +218,12 @@ AgriVision/
 | [System A 指南](docs/system-a-guide.md) | 五引擎详解、API 文档、模型训练、Nginx 部署 |
 | [System B 指南](docs/system-b-guide.md) | 双引擎架构、多摄像头配置、告警系统、ESP32 固件 |
 | [算法评估与现场闭环](docs/algorithm-evaluation.md) | 严格评估清单、分层指标、校准、OOD/不确定性和多帧融合 |
+| [System B 架构收口](docs/architecture-hardening.md) | Blueprint 路由、参数边界、任务生命周期和远程媒体认证 |
 | [技术路线图](docs/roadmap.md) | 阶段目标、验收标准与后续迭代方向 |
 
 ## 当前版本说明
 
-阶段 1 已完成稳定运行基线，阶段 2 工程化目标已完成，阶段 3 已完成可复现的算法评估与现场闭环基础；真实标注集上的模型指标仍待验收。阶段 4–45 持续完善了离线队列、HTTP/MQTT 同步、连接生命周期、错误分类、脱敏状态和本机回归。当前公开分支追踪五个小型运行时权重，HuggingFace 缓存仍不进入 Git；首次使用前请按文档准备缓存和替代模型文件。
+阶段 1 已完成稳定运行基线，阶段 2 的架构与边界已完成收口，阶段 3 已完成可复现的算法评估与现场闭环基础；真实标注集上的模型指标仍待验收。阶段 4–45 持续完善了离线队列、HTTP/MQTT 同步、连接生命周期、错误分类、脱敏状态和本机回归。当前公开分支追踪五个小型运行时权重，HuggingFace 缓存仍不进入 Git；首次使用前请按文档准备缓存和替代模型文件。
 
 ### 阶段 3 算法评估与现场闭环
 
@@ -234,12 +235,12 @@ AgriVision/
 
 ### 阶段 2 工程化落地
 
-- System B 已按边界拆出 `routes/`、`services/`、`workers/`、`repositories/` 和 `schemas/`；`app.py` 保留为依赖组装入口和现场设备/页面适配层。
+- System B 已按边界拆出 `routes/`、`services/`、`workers/`、`repositories/`、`schemas/` 和 `templates/`；控制、事件、视频、诊断和页面路由均由 Blueprint 组合，`app.py` 保留为依赖组装入口和现场设备/检测循环适配层。
 - 检测历史统一写入带索引的 SQLite `system_b/core/detection_logs/history.db`；旧 `history.json` 会在首次启动时迁移，分页、趋势和统计走数据库查询。
 - 每个摄像头拥有独立的检测、SD 同步和拍照任务队列，重复任务会被拒绝；可通过 `GET /api/tasks` 查看队列深度、运行状态、成功/失败计数。
 - `GET /metrics` 输出 HTTP 延迟、颜色/YOLO 推理耗时、队列长度、检测错误和告警发送结果；请求日志使用固定 JSON 字段和请求 ID。
 - System A/B 默认只监听本机回环地址。远程部署前为两个服务设置同一个 `AGRIVISION_API_TOKEN`；业务 API 使用 Bearer 或 `X-API-Key`，并启用按来源地址的有界限流。
-- System A 的 `/health/live`、`/health/ready` 保持公开；推理、异步结果和历史接口需要认证。System B 调用 System A `/report` 时自动携带服务端 token。
+- System A 的 `/health/live`、`/health/ready` 保持公开；推理、异步结果和历史接口需要认证。System B 的视频流、数据集图片和历史图片也受远程认证保护；浏览器通过短期 HttpOnly 会话 cookie 加载媒体，不把 token 放进 URL。System B 调用 System A `/report` 时自动携带服务端 token。
 - Webhook URL 通过允许列表和 HTTPS 约束，签名密钥只从环境变量读取，接口与页面均不回显 token/query/secret；参考 [.env.example](.env.example)、[Docker Compose 部署](docker-compose.system-b.yml) 和 [System B 指南](docs/system-b-guide.md)。
 
 本阶段的本机证据包括完整 unittest、源码编译、真实 Flask 路由检查和公开仓库隐私扫描；Docker 运行、反向代理、跨主机多实例以及真实 ESP32 长时间稳定性仍需在目标环境验收。

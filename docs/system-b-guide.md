@@ -22,6 +22,8 @@ System B 是 AgriVision 的**实时病虫害监控子系统**，基于 Flask 构
 
 算法评估清单、现场 FP/FN 定义和跨光照/设备验证方法见[算法评估与现场闭环](algorithm-evaluation.md)。
 
+System B 的路由分层、参数校验、任务生命周期和远程媒体认证见[架构与运行时边界收口](architecture-hardening.md)。
+
 ### 核心能力
 
 | 能力 | 说明 |
@@ -39,7 +41,7 @@ System B 是 AgriVision 的**实时病虫害监控子系统**，基于 Flask 构
 
 ```
 后端:  Flask + OpenCV + ultralytics YOLOv8 + threading
-前端:  内嵌 SPA (HTML + CSS + JavaScript + Chart.js)
+前端:  原生 SPA (HTML + CSS + JavaScript + Chart.js，无额外构建步骤)
 硬件:  ESP32-CAM (OV2640) + SD 卡
 通信:  HTTP (MJPEG 流 / REST API) + 钉钉 Webhook
 ```
@@ -49,8 +51,10 @@ System B 是 AgriVision 的**实时病虫害监控子系统**，基于 Flask 构
 ```
 system_b/
 ├── core/
-│   ├── app.py                  # Flask 组装入口与设备/页面适配层
-│   ├── routes/                 # monitoring、history、storage、engineering
+│   ├── app.py                  # Flask 组装入口与设备/检测循环适配层
+│   ├── page_templates.py       # UTF-8 页面模板加载器
+│   ├── templates/              # 原生 HTML/CSS/JavaScript 页面模板
+│   ├── routes/                 # 页面、控制、事件、视频、诊断及工程 Blueprint
 │   ├── services/               # API 认证/限流、Prometheus 指标、时序融合
 │   ├── workers/                # 每摄像头有界任务队列和可停止 worker
 │   ├── repositories/           # 参数化 SQLite 历史访问
@@ -267,7 +271,7 @@ run_detection_once(camera_id):
 
 ## 4. Web 监控界面
 
-前端以 Python 字符串形式嵌入在 `app.py` 的 `HTML_PAGE` 变量中，Flask 根路由 `/` 直接返回完整 HTML。无需额外前端构建工具。
+前端是无需额外构建工具的原生 HTML/CSS/JavaScript，保存在 `core/templates/main.html` 和 `core/templates/dashboard.html`。`page_templates.py` 以 UTF-8 加载模板，Flask 根路由 `/` 仍直接返回完整 HTML。
 
 ### 4.1 四个功能标签页
 
@@ -731,12 +735,13 @@ System B 使用 `offline_events/.sync-lock.db` 的 SQLite `BEGIN IMMEDIATE` 作�
 
 | 路径 | 方法 | 说明 |
 |------|------|------|
-| `/api/tasks` | GET | 每摄像头各任务的排队、运行、完成和失败计数 |
+| `/api/auth/session` | POST | 将 Bearer token 换成短期浏览器媒体会话 |
+| `/api/tasks` | GET | 每摄像头各任务的排队、运行、完成、失败、取消和重试计数 |
 | `/metrics` | GET | HTTP 延迟、推理耗时、队列深度、检测错误和告警结果 |
 
-`/api/*` 和 `/metrics` 需要认证。回环开发且未配置 token 时可访问；远程部署必须设置 `AGRIVISION_API_TOKEN`，支持 `Authorization: Bearer ...` 或 `X-API-Key`。`AGRIVISION_API_RATE_LIMIT_MAX` 与 `AGRIVISION_API_RATE_LIMIT_WINDOW` 提供按来源地址的有界限流。System A 共享同一 token 边界，System B 代理请求 `/report` 时会自动带上 `AGRIVISION_SYSTEM_A_API_TOKEN`，未设置时回退到 `AGRIVISION_API_TOKEN`。
+`/api/*`、`/metrics`、`/video_feed*`、`/dataset/*` 和 `/history/image/*` 需要认证。回环开发且未配置 token 时可访问；远程部署必须设置 `AGRIVISION_API_TOKEN`，支持 `Authorization: Bearer ...` 或 `X-API-Key`。`AGRIVISION_API_RATE_LIMIT_MAX` 与 `AGRIVISION_API_RATE_LIMIT_WINDOW` 提供按来源地址的有界限流。System A 共享同一 token 边界，System B 代理请求 `/report` 时会自动带上 `AGRIVISION_SYSTEM_A_API_TOKEN`，未设置时回退到 `AGRIVISION_API_TOKEN`。
 
-远程打开内嵌监控页面时，页面第一次收到 401 会提示输入 token，并只保存到当前浏览器会话的 `sessionStorage`；不会把 token 拼接到 URL。脚本客户端应直接设置上述请求头。
+远程打开内嵌监控页面时，页面第一次收到 401 会提示输入 token，并只保存到当前浏览器会话的 `sessionStorage`；随后调用 `/api/auth/session` 换取绑定来源地址的短期 HttpOnly/SameSite cookie，视频 `<img>` 因此可以安全加载。不会把 token 拼接到 URL；脚本客户端应直接设置上述请求头。
 
 ### 9.11 健康检查接口
 

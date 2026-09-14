@@ -16,6 +16,7 @@ def create_storage_blueprint(
     get_save_state,
     sync_state_lock,
     get_sync_state,
+    filter_camera_filenames,
 ):
     blueprint = Blueprint("storage", __name__)
 
@@ -23,15 +24,18 @@ def create_storage_blueprint(
     def api_sd_images():
         if not os.path.exists(data_set_dir):
             return jsonify([])
-        files = sorted(os.listdir(data_set_dir), reverse=True)
-        return jsonify([name for name in files if name.lower().endswith((".jpg", ".jpeg"))])
+        names = [
+            name for name in os.listdir(data_set_dir)
+            if os.path.isfile(os.path.join(data_set_dir, name))
+        ]
+        return jsonify(sorted(filter_camera_filenames(names), reverse=True))
 
     @blueprint.get("/dataset/<path:filename>")
     def serve_dataset_image(filename):
-        filepath = os.path.join(data_set_dir, filename)
-        if not os.path.isfile(filepath):
+        safe_names = filter_camera_filenames([filename])
+        if not safe_names:
             return "图片不存在，请先同步", 404
-        return send_from_directory(data_set_dir, filename)
+        return send_from_directory(data_set_dir, safe_names[0])
 
     @blueprint.get("/api/save_to_sd")
     def api_save_to_sd():

@@ -2,6 +2,7 @@
 
 import hmac
 import os
+import secrets
 import threading
 import time
 from dataclasses import dataclass
@@ -18,6 +19,9 @@ class ApiSecurity:
     """Use bearer authentication when configured and fail closed for remote access."""
 
     MAX_TRACKED_CLIENTS = 4096
+    MAX_SESSIONS = 4096
+    SESSION_TTL_SECONDS = 3600
+    SESSION_COOKIE_NAME = "agrivision_session"
 
     def __init__(self, api_token="", auth_required=False, rate_limit_max=120, rate_limit_window_seconds=60):
         if isinstance(api_token, str) and api_token and not 16 <= len(api_token) <= 256:
@@ -32,6 +36,7 @@ class ApiSecurity:
         self.rate_limit_window_seconds = float(rate_limit_window_seconds)
         self._lock = threading.Lock()
         self._windows = {}
+        self._sessions = {}
 
     @classmethod
     def from_env(cls):
@@ -59,6 +64,53 @@ class ApiSecurity:
             return authorization[len(prefix):].strip()
         return (headers.get("X-API-Key", "") if headers else "").strip()
 
+    @classmethod
+    def is_protected_path(cls, path):
+        return (
+            path.startswith("/api/")
+            or path == "/metrics"
+            or path.startswith("/video_feed")
+            or path.startswith("/dataset/")
+            or path.startswith("/history/image/")
+        )
+
+    def _valid_session(self, session_id, remote_addr):
+        if not session_id:
+            return False
+        now = time.monotonic()
+        bound_addr = remote_addr or "unknown"
+        with self._lock:
+            entry = self._sessions.get(session_id)
+            if entry is None:
+                return False
+            expires_at, session_addr = entry
+            if expires_at <= now or session_addr != bound_addr:
+                self._sessions.pop(session_id, None)
+                return False
+            return True
+
+    def issue_session(self, remote_addr, headers):
+        """Issue a bounded browser session after a valid API token."""
+        if not self.api_token:
+            return None
+        provided = self._extract_token(headers)
+        if not provided or not hmac.compare_digest(provided, self.api_token):
+            return None
+        session_id = secrets.token_urlsafe(32)
+        now = time.monotonic()
+        bound_addr = remote_addr or "unknown"
+        with self._lock:
+            expired = [
+                key for key, (expires_at, _) in self._sessions.items()
+                if expires_at <= now
+            ]
+            for key in expired:
+                self._sessions.pop(key, None)
+            if len(self._sessions) >= self.MAX_SESSIONS:
+                return None
+            self._sessions[session_id] = (now + self.SESSION_TTL_SECONDS, bound_addr)
+        return session_id
+
     def _allow_rate(self, remote_addr):
         now = time.monotonic()
         key = remote_addr or "unknown"
@@ -82,8 +134,8 @@ class ApiSecurity:
             self._windows[key] = (started, count + 1)
             return True, 0
 
-    def authorize(self, path, remote_addr, headers):
-        if not (path.startswith("/api/") or path == "/metrics"):
+    def authorize(self, path, remote_addr, headers, cookies=None):
+        if not self.is_protected_path(path):
             return SecurityDecision("allow")
 
         if self.api_token:
@@ -91,7 +143,9 @@ class ApiSecurity:
             if not allowed:
                 return SecurityDecision("rate_limited", "rate_limit_exceeded", retry_after)
             provided = self._extract_token(headers)
-            if not provided or not hmac.compare_digest(provided, self.api_token):
+            session_id = cookies.get(self.SESSION_COOKIE_NAME, "") if cookies else ""
+            token_valid = bool(provided) and hmac.compare_digest(provided, self.api_token)
+            if not token_valid and not self._valid_session(session_id, remote_addr):
                 return SecurityDecision("deny", "invalid_api_token")
         elif self.auth_required or not self._is_loopback(remote_addr):
             return SecurityDecision("deny", "api_auth_not_configured")
@@ -108,4 +162,6 @@ class ApiSecurity:
             "auth_required_for_remote": True,
             "rate_limit_max": self.rate_limit_max,
             "rate_limit_window_seconds": self.rate_limit_window_seconds,
+            "session_cookie": self.SESSION_COOKIE_NAME,
+            "session_ttl_seconds": self.SESSION_TTL_SECONDS,
         }

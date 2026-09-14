@@ -7,12 +7,15 @@ from system_b.core.event_sync_status import EventSyncStatus
 
 class Stage20SyncObservabilityTests(unittest.TestCase):
     def test_system_b_exposes_safe_sync_status_endpoint(self):
-        source = (Path(__file__).resolve().parents[1] / "system_b" / "core" / "app.py").read_text(encoding="utf-8")
+        root = Path(__file__).resolve().parents[1]
+        app_source = (root / "system_b" / "core" / "app.py").read_text(encoding="utf-8")
+        route_source = (root / "system_b" / "core" / "routes" / "events.py").read_text(encoding="utf-8")
 
-        self.assertIn("@app.route('/api/offline_events/sync_status')", source)
-        self.assertIn("event_sync_status.snapshot", source)
-        self.assertIn('failure_type="runtime"', source)
-        self.assertNotIn('"broker_url"', source)
+        self.assertIn('@blueprint.get("/api/offline_events/sync_status")', route_source)
+        self.assertIn("event_sync_status.snapshot", route_source)
+        self.assertIn('failure_type="runtime"', app_source)
+        self.assertIn("mqtt_config=build_mqtt_config_status", route_source)
+        self.assertNotIn('"broker_url": MQTT_BROKER_URL', route_source)
 
     def test_snapshot_has_safe_initial_state(self):
         status = EventSyncStatus()

@@ -10,7 +10,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 class Stage1ContractTests(unittest.TestCase):
     def test_system_b_uses_system_a_report_upload_field(self):
         system_a = (ROOT / "system_a" / "core" / "app_fastapi.py").read_text(encoding="utf-8")
-        system_b = (ROOT / "system_b" / "core" / "app.py").read_text(encoding="utf-8")
+        system_b = (ROOT / "system_b" / "core" / "routes" / "diagnosis.py").read_text(encoding="utf-8")
 
         self.assertIn("async def report_endpoint(file: UploadFile = File(...))", system_a)
         self.assertIn('files={"file":', system_b)

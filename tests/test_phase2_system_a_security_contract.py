@@ -42,11 +42,11 @@ class SystemASecurityTests(unittest.TestCase):
     def test_system_a_and_b_use_same_auth_boundary_and_proxy_header(self):
         system_a = (ROOT / "system_a" / "core" / "app_fastapi.py").read_text(encoding="utf-8")
         security_source = SECURITY_PATH.read_text(encoding="utf-8")
-        system_b = (ROOT / "system_b" / "core" / "app.py").read_text(encoding="utf-8")
+        system_b = (ROOT / "system_b" / "core" / "routes" / "diagnosis.py").read_text(encoding="utf-8")
         frontend = (ROOT / "system_a" / "core" / "frontend.html").read_text(encoding="utf-8")
         self.assertIn("api_security_middleware", system_a)
         self.assertIn('AGRIVISION_API_TOKEN', security_source)
-        self.assertIn('headers={"Authorization": f"Bearer {SYSTEM_A_API_TOKEN}"}', system_b)
+        self.assertIn('headers={"Authorization": f"Bearer {system_a_api_token}"}', system_b)
         self.assertIn("sessionStorage.getItem('agrivision_api_token')", frontend)
         self.assertNotIn("agrivision_api_token", system_a)
 

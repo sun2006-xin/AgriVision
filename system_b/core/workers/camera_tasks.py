@@ -24,9 +24,22 @@ class _TaskSlot:
     accepted: int = 0
     completed: int = 0
     failed: int = 0
+    cancelled: int = 0
+    retries: int = 0
+    next_task_id: int = 0
+    last_task_id: int = 0
+    last_status: str = "idle"
     last_error_code: str = ""
     last_started_at: str = ""
     last_finished_at: str = ""
+
+
+@dataclass(frozen=True)
+class _QueuedTask:
+    callback: object
+    max_retries: int = 0
+    retry_backoff: float = 0.0
+    task_id: int = 0
 
 
 class CameraTaskManager:
@@ -63,20 +76,38 @@ class CameraTaskManager:
                 )
                 slot.worker.start()
 
-    def submit(self, camera_id, task, callback):
+    def submit(self, camera_id, task, callback, max_retries=0, retry_backoff=0.0):
         if not callable(callback):
             raise TypeError("callback must be callable")
+        if isinstance(max_retries, bool) or not isinstance(max_retries, int) or not 0 <= max_retries <= 5:
+            raise ValueError("max_retries must be an integer from 0 to 5")
+        if isinstance(retry_backoff, bool) or not isinstance(retry_backoff, (int, float)) or not 0 <= retry_backoff <= 60:
+            raise ValueError("retry_backoff must be a number from 0 to 60")
         slot = self._slot(camera_id, task)
         with slot.lock:
+            # A stopped manager may be reused after a controlled shutdown.  A
+            # live worker still owns the stop signal and must reject new work.
+            if slot.stop_event.is_set():
+                if slot.worker is not None and slot.worker.is_alive():
+                    return False
+                slot.stop_event.clear()
             if slot.active or not slot.queue.empty() or slot.stop_event.is_set():
                 return False
             try:
-                slot.queue.put_nowait(callback)
+                slot.next_task_id += 1
+                slot.queue.put_nowait(_QueuedTask(
+                    callback=callback,
+                    max_retries=max_retries,
+                    retry_backoff=float(retry_backoff),
+                    task_id=slot.next_task_id,
+                ))
             except queue_module.Full:
                 return False
             slot.accepted += 1
+            slot.last_status = "queued"
+            slot.last_error_code = ""
             self._set_queue_metric(task, slot.queue.qsize(), camera_id)
-        self._ensure_worker(camera_id, task, slot)
+            self._ensure_worker(camera_id, task, slot)
         return True
 
     def start_periodic(self, camera_id, task, callback, interval_seconds, run_immediately=False):
@@ -108,35 +139,84 @@ class CameraTaskManager:
     def _worker_loop(self, camera_id, task, slot):
         while not slot.stop_event.is_set():
             try:
-                callback = slot.queue.get(timeout=0.2)
+                queued = slot.queue.get(timeout=0.2)
             except queue_module.Empty:
                 continue
             with slot.lock:
                 slot.active = True
+                slot.last_task_id = queued.task_id
+                slot.last_status = "running"
                 slot.last_started_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 self._set_queue_metric(task, 0, camera_id)
             try:
-                callback()
-            except Exception:
-                with slot.lock:
-                    slot.failed += 1
-                    slot.last_error_code = "task_failed"
-                log_event(
-                    self._logger,
-                    logging.ERROR,
-                    "camera_task_failed",
-                    camera_id=camera_id,
-                    task=task,
-                )
-            else:
-                with slot.lock:
-                    slot.completed += 1
-                    slot.last_error_code = ""
+                for attempt in range(queued.max_retries + 1):
+                    if slot.stop_event.is_set():
+                        with slot.lock:
+                            slot.cancelled += 1
+                            slot.last_status = "cancelled"
+                            slot.last_error_code = "task_cancelled"
+                        break
+                    try:
+                        queued.callback()
+                    except Exception:
+                        if attempt < queued.max_retries and not slot.stop_event.is_set():
+                            with slot.lock:
+                                slot.retries += 1
+                                slot.last_status = "retrying"
+                                slot.last_error_code = "task_retrying"
+                            if slot.stop_event.wait(queued.retry_backoff):
+                                with slot.lock:
+                                    slot.cancelled += 1
+                                    slot.last_status = "cancelled"
+                                    slot.last_error_code = "task_cancelled"
+                                break
+                            continue
+                        with slot.lock:
+                            slot.failed += 1
+                            slot.last_status = "failed"
+                            slot.last_error_code = "task_failed"
+                        log_event(
+                            self._logger,
+                            logging.ERROR,
+                            "camera_task_failed",
+                            camera_id=camera_id,
+                            task=task,
+                        )
+                        break
+                    else:
+                        with slot.lock:
+                            slot.completed += 1
+                            slot.last_status = "completed"
+                            slot.last_error_code = ""
+                        break
             finally:
                 with slot.lock:
                     slot.active = False
                     slot.last_finished_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
                 slot.queue.task_done()
+
+    def cancel(self, camera_id, task):
+        """Stop a task stream and drain queued callbacks without executing them."""
+        slot = self._slot(camera_id, task)
+        removed = 0
+        with slot.lock:
+            slot.periodic_stop.set()
+            while True:
+                try:
+                    slot.queue.get_nowait()
+                except queue_module.Empty:
+                    break
+                else:
+                    slot.queue.task_done()
+                    removed += 1
+            slot.cancelled += removed
+            slot.stop_event.set()
+            running = slot.active
+            if not slot.active:
+                slot.last_status = "cancelled"
+                slot.last_error_code = "task_cancelled"
+        self._set_queue_metric(task, 0, camera_id)
+        return {"queued_cancelled": removed, "running": running}
 
     def _set_queue_metric(self, task, depth, camera_id=None):
         if self._metrics is not None:
@@ -156,6 +236,10 @@ class CameraTaskManager:
                             "accepted": slot.accepted,
                             "completed": slot.completed,
                             "failed": slot.failed,
+                            "cancelled": slot.cancelled,
+                            "retries": slot.retries,
+                            "last_task_id": slot.last_task_id,
+                            "last_status": slot.last_status,
                             "last_error_code": slot.last_error_code,
                             "last_started_at": slot.last_started_at,
                             "last_finished_at": slot.last_finished_at,
@@ -167,7 +251,9 @@ class CameraTaskManager:
         while time.monotonic() < deadline:
             snapshot = self.snapshot()["cameras"]
             if all(
-                not task["running"] and task["queued"] == 0
+                not task["running"]
+                and task["queued"] == 0
+                and task["last_status"] not in {"queued", "running", "retrying"}
                 for camera in snapshot.values() for task in camera.values()
             ):
                 return True
@@ -178,8 +264,23 @@ class CameraTaskManager:
         with self._lock:
             slots = [slot for tasks in self._slots.values() for slot in tasks.values()]
         for slot in slots:
-            slot.periodic_stop.set()
-            slot.stop_event.set()
+            with slot.lock:
+                slot.periodic_stop.set()
+                slot.stop_event.set()
+                removed = 0
+                while True:
+                    try:
+                        slot.queue.get_nowait()
+                    except queue_module.Empty:
+                        break
+                    else:
+                        slot.queue.task_done()
+                        removed += 1
+                if removed:
+                    slot.cancelled += removed
+                    if not slot.active:
+                        slot.last_status = "cancelled"
+                        slot.last_error_code = "task_cancelled"
         deadline = time.monotonic() + timeout
         for slot in slots:
             for worker in (slot.periodic_worker, slot.worker):

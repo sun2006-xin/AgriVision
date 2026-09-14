@@ -290,6 +290,16 @@ AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实�
 - 有效事件的时间排序和容量限制保持不变；短暂文件系统竞态不会导致查询、同步或清理流程异常退出。
 - 本阶段只覆盖本机文件系统边界，不代表公网 broker、ACL、证书轮换或 ESP32 现场验收。
 
+## 阶段 46：System B 架构与运行时边界收口（本机已完成）
+
+- 将控制、事件、视频、System A 代理和页面路由分别拆到 `routes/control.py`、`routes/events.py`、`routes/video.py`、`routes/diagnosis.py` 和 `routes/pages.py`；`app.py` 只负责依赖组装、设备适配、检测循环和启动。
+- 将主页面和大屏 HTML/CSS/JavaScript 移到 `core/templates/`，由 `page_templates.py` 加载，并为两个模板增加内联脚本语法回归，避免页面迁移时出现首屏静默失败。
+- 参数校验统一覆盖未知字段、严格整数类型、有限值、后端范围、奇数核大小和跨阈值关联；配置加载、更新和 mask 预览均不能绕过同一校验入口。
+- `CameraTaskManager` 增加有界重试、取消、队列清理、取消/重试计数和受控停止后的 worker 重建，减少后台 daemon 线程的隐式生命周期。
+- 远程认证范围扩展到视频流、数据集图片和历史图片；浏览器通过 `/api/auth/session` 获取绑定来源地址的短期 HttpOnly/SameSite cookie，不把 token 放入媒体 URL。
+- SD 图片路由实际接入文件名白名单和普通文件检查，避免“安全工具存在但路由未使用”。
+- 本阶段需以全量 unittest、AST/compileall（排除本地 `.venv`）、真实路由表、媒体会话和公开扫描为验收证据；Docker、多实例跨主机协调、真实设备长期运行和真实田间数据仍未验收。
+
 ## 发布规则
 
 每个阶段单独建立分支、完成测试和隐私扫描后提交并推送；模型缓存、数据库、摄像头地址、Webhook 和本地日志不得进入公开提交。

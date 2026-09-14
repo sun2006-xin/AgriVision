@@ -44,7 +44,9 @@ class Stage37MqttConfigPreflightTests(unittest.TestCase):
         self.assertNotIn("secret", str(status))
 
     def test_sync_status_wires_preflight_without_raw_configuration(self):
-        source = (ROOT / "system_b" / "core" / "app.py").read_text(encoding="utf-8")
+        source = (ROOT / "system_b" / "core" / "routes" / "events.py").read_text(encoding="utf-8")
+        frontend = (ROOT / "system_b" / "core" / "templates" / "main.html").read_text(encoding="utf-8")
+        source += "\n" + frontend
         self.assertIn("build_mqtt_config_status", source)
         self.assertIn("mqtt_config=build_mqtt_config_status", source)
         self.assertIn("mqttConfig.configured", source)

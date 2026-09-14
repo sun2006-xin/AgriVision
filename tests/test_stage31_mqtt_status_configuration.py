@@ -7,9 +7,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class Stage31MqttStatusConfigurationTests(unittest.TestCase):
     def test_status_endpoint_passes_safe_mqtt_timeout_configuration(self):
-        source = (ROOT / "system_b" / "core" / "app.py").read_text(encoding="utf-8")
-        self.assertIn("mqtt_connack_timeout=MQTT_CONNACK_TIMEOUT", source)
-        self.assertIn("mqtt_publish_timeout=MQTT_PUBLISH_TIMEOUT", source)
+        source = (ROOT / "system_b" / "core" / "routes" / "events.py").read_text(encoding="utf-8")
+        app_source = (ROOT / "system_b" / "core" / "app.py").read_text(encoding="utf-8")
+        self.assertIn("mqtt_connack_timeout=settings[\"connack_timeout\"]", source)
+        self.assertIn("mqtt_publish_timeout=settings[\"publish_timeout\"]", source)
+        self.assertIn("connack_timeout=MQTT_CONNACK_TIMEOUT", app_source)
+        self.assertIn("publish_timeout=MQTT_PUBLISH_TIMEOUT", app_source)
 
     def test_snapshot_contains_timeout_numbers_but_no_transport_secrets(self):
         from system_b.core.event_sync_status import EventSyncStatus

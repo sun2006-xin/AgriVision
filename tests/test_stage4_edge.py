@@ -59,13 +59,15 @@ class Stage4EdgeTests(unittest.TestCase):
                 cache.put({"event_id": "../outside", "payload": {}})
 
     def test_system_b_exposes_offline_queue_contract(self):
-        source = (ROOT / "system_b" / "core" / "app.py").read_text(encoding="utf-8")
+        app_source = (ROOT / "system_b" / "core" / "app.py").read_text(encoding="utf-8")
+        events_source = (ROOT / "system_b" / "core" / "routes" / "events.py").read_text(encoding="utf-8")
+        source = app_source + "\n" + events_source
         self.assertIn("offline_event_cache.put(build_detection_event(camera_id, stable_result))", source)
-        self.assertIn("@app.route('/api/offline_events/ack', methods=['POST'])", source)
-        self.assertIn("@app.route('/api/offline_events/sync', methods=['POST'])", source)
+        self.assertIn('@blueprint.post("/api/offline_events/ack")', events_source)
+        self.assertIn('@blueprint.post("/api/offline_events/sync")', events_source)
         self.assertIn("AGRIVISION_EVENTS_SINK_URL", source)
         self.assertIn("offline_event_sync_lock", source)
-        self.assertIn("if not isinstance(params, dict):", source)
+        self.assertIn("validate_sync_request(payload)", events_source)
         transport_source = (ROOT / "system_b" / "core" / "event_transport.py").read_text(encoding="utf-8")
         self.assertIn("Idempotency-Key", transport_source)
 

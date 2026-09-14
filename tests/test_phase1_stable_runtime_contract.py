@@ -8,14 +8,15 @@ ROOT = Path(__file__).resolve().parents[1]
 class Phase1StableRuntimeContractTests(unittest.TestCase):
     def test_system_a_report_and_system_b_proxy_use_file_field(self):
         system_a = (ROOT / "system_a" / "core" / "app_fastapi.py").read_text(encoding="utf-8")
-        system_b = (ROOT / "system_b" / "core" / "app.py").read_text(encoding="utf-8")
+        system_b = (ROOT / "system_b" / "core" / "routes" / "diagnosis.py").read_text(encoding="utf-8")
         self.assertIn('async def report_endpoint(file: UploadFile = File(...))', system_a)
         self.assertIn('files={"file": ("frame.jpg", image_bytes, "image/jpeg")}', system_b)
 
     def test_system_b_params_and_health_contracts_are_wired(self):
         source = (ROOT / "system_b" / "core" / "app.py").read_text(encoding="utf-8")
+        control = (ROOT / "system_b" / "core" / "routes" / "control.py").read_text(encoding="utf-8")
         monitoring = (ROOT / "system_b" / "core" / "routes" / "monitoring.py").read_text(encoding="utf-8")
-        self.assertIn("config_manager.validate_params(params)", source)
+        self.assertIn("config_manager.validate_params(params)", control)
         self.assertIn("register_monitoring_routes", source)
         self.assertIn('@blueprint.get("/health/live")', monitoring)
         self.assertIn('@blueprint.get("/health/ready")', monitoring)

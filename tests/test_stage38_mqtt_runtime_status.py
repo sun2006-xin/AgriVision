@@ -32,8 +32,13 @@ class Stage38MqttRuntimeStatusTests(unittest.TestCase):
     def test_app_records_runtime_and_manual_sync_outcomes(self):
         from pathlib import Path
 
-        source = (Path(__file__).resolve().parents[1] / "system_b" / "core" / "app.py").read_text(
-            encoding="utf-8"
+        root = Path(__file__).resolve().parents[1]
+        source = "\n".join(
+            (
+                (root / "system_b" / "core" / "app.py").read_text(encoding="utf-8"),
+                (root / "system_b" / "core" / "routes" / "events.py").read_text(encoding="utf-8"),
+                (root / "system_b" / "core" / "templates" / "main.html").read_text(encoding="utf-8"),
+            )
         )
         self.assertIn('record_mqtt_runtime("connecting")', source)
         self.assertIn('record_mqtt_runtime("connected")', source)

@@ -24,7 +24,7 @@ VENV_DIR = os.path.join(BASE_DIR, '.venv')
 sys.path.insert(0, VENV_DIR)
 
 # ---------- Web 框架与图像处理依赖 ----------
-from flask import Flask, Response, g, jsonify, request  # Flask: Web 框架; Response: 自定义响应(视频流); jsonify: JSON 响应; request: 请求对象
+from flask import Flask, g, jsonify, request  # Flask: Web 框架; jsonify: JSON 响应; request: 请求对象
 import cv2              # OpenCV: 图像编解码、绘制文字、形态学操作等
 import time             # 时间相关：计时、延时、时间戳格式化
 import threading        # 多线程支持：后台检测循环、SD 同步循环、线程锁
@@ -160,6 +160,12 @@ from routes.engineering import register_engineering_routes
 from routes.monitoring import register_monitoring_routes
 from routes.history import register_history_routes
 from routes.storage import register_storage_routes
+from routes.control import register_control_routes
+from routes.events import register_event_routes
+from routes.video import register_video_routes
+from routes.diagnosis import register_diagnosis_routes
+from routes.pages import register_page_routes
+from page_templates import load_page
 
 # 创建 Flask 应用实例
 app = Flask(__name__)
@@ -199,7 +205,12 @@ def finish_request_observation(response):
 
 @app.before_request
 def enforce_api_security():
-    decision = api_security.authorize(request.path, request.remote_addr, request.headers)
+    decision = api_security.authorize(
+        request.path,
+        request.remote_addr,
+        request.headers,
+        request.cookies,
+    )
     if decision.status == "allow":
         return None
     if decision.status == "rate_limited":
@@ -231,6 +242,20 @@ MQTT_CLIENT_ID = os.environ.get("AGRIVISION_MQTT_CLIENT_ID", "agrivision-system-
 MQTT_USERNAME = os.environ.get("AGRIVISION_MQTT_USERNAME")
 MQTT_PASSWORD = os.environ.get("AGRIVISION_MQTT_PASSWORD")
 MQTT_CA_CERTS = os.environ.get("AGRIVISION_MQTT_CA_CERTS")
+
+
+def get_mqtt_settings():
+    """Return current MQTT settings to route adapters without exposing them."""
+    return {
+        "broker_url": MQTT_BROKER_URL,
+        "topic": MQTT_TOPIC,
+        "client_id": MQTT_CLIENT_ID,
+        "username": MQTT_USERNAME,
+        "password": MQTT_PASSWORD,
+        "ca_certs": MQTT_CA_CERTS,
+        "connack_timeout": MQTT_CONNACK_TIMEOUT,
+        "publish_timeout": MQTT_PUBLISH_TIMEOUT,
+    }
 
 
 def _read_nonnegative_float(name, default):
@@ -475,6 +500,12 @@ alert_notifier = get_notifier()
 # yolo_enabled: YOLO 引擎总开关，可通过 API 动态启停
 yolo_enabled = True
 
+
+def set_yolo_enabled(enabled):
+    """Update the YOLO switch through an explicit dependency callback."""
+    global yolo_enabled
+    yolo_enabled = bool(enabled)
+
 register_monitoring_routes(
     app,
     cameras=cameras,
@@ -500,6 +531,7 @@ register_storage_routes(
     get_save_state=_get_save_sd_info,
     sync_state_lock=sd_lock,
     get_sync_state=_get_sd_sync_info,
+    filter_camera_filenames=filter_camera_filenames,
 )
 
 
@@ -949,10 +981,10 @@ def detection_loop(camera_id=None):
 
 
 # ============================================================
-# 网页 HTML - 单页面应用（SPA）前端代码
+# 网页 HTML - 单页面应用（SPA）模板说明
 # ============================================================
-# 整个 Web 界面以一个 Python 多行字符串的形式嵌入，由 Flask 的 / 路由直接返回。
-# 这种设计避免了额外的静态文件管理，适合嵌入式部署场景。
+# Web 界面保留为无需构建工具的原生 HTML/CSS/JavaScript，模板文件位于
+# templates/，由 page_templates.py 以 UTF-8 加载；页面路由在 routes/pages.py 注册。
 #
 # === 页面结构（三个 Tab 页签） ===
 # 1. 实时监控 (tab-monitor):
@@ -997,1245 +1029,15 @@ def detection_loop(camera_id=None):
 # - Chart.js (CDN): 用于绘制趋势折线图
 # - 无其他前端框架，纯原生 JavaScript + CSS
 # ============================================================
-# ========== 网页 HTML ==========
-HTML_PAGE = """<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>大棚病虫害实时监控系统</title>
-<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-<style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: "Microsoft YaHei", sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
-.header { text-align: center; margin-bottom: 20px; }
-.header h1 { font-size: 24px; margin-bottom: 10px; }
-.status-box { display: inline-block; padding: 8px 24px; border-radius: 20px; font-size: 18px; font-weight: bold; }
-.status-normal { background: #2e7d32; }
-.status-notice { background: #ef6c00; }
-.status-warning { background: #c62828; }
-.status-serious { background: #7b0000; }
-
-.camera-selector { display:inline-flex; align-items:center; gap:8px; margin-left:20px; }
-.camera-selector select { background:#1e3a5f; color:#fff; border:1px solid #4fc3f7; padding:4px 8px; border-radius:4px; font-size:13px; }
-.dashboard-link { display:inline-block; margin-left:16px; padding:6px 14px; background:#16213e; color:#4fc3f7; border:1px solid #4fc3f7; border-radius:6px; text-decoration:none; font-size:13px; transition:all 0.3s; }
-.dashboard-link:hover { background:#0f3460; color:#fff; }
-.btn-diagnose { display:inline-block; margin-left:12px; padding:6px 16px; background:linear-gradient(135deg,#6a11cb,#2575fc); color:#fff; border:none; border-radius:6px; font-size:13px; cursor:pointer; transition:all 0.3s; }
-.btn-diagnose:hover { opacity:0.85; transform:translateY(-1px); }
-.btn-diagnose:disabled { opacity:0.5; cursor:not-allowed; transform:none; }
-.report-modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); z-index:9999; justify-content:center; align-items:center; }
-.report-modal.show { display:flex; }
-.report-modal-content { background:#16213e; border-radius:16px; padding:30px; max-width:700px; width:90%; max-height:85vh; overflow-y:auto; position:relative; border:1px solid #4fc3f7; }
-.report-modal-content h2 { color:#4fc3f7; margin-bottom:16px; font-size:20px; }
-.report-modal-content .report-text { color:#ddd; line-height:1.8; font-size:14px; white-space:pre-wrap; }
-.report-close { position:absolute; top:12px; right:16px; background:none; border:none; color:#aaa; font-size:24px; cursor:pointer; }
-.report-close:hover { color:#fff; }
-.report-loading { text-align:center; padding:40px 0; color:#4fc3f7; font-size:16px; }
-.report-loading .spinner { display:inline-block; width:30px; height:30px; border:3px solid #333; border-top-color:#4fc3f7; border-radius:50%; animation:spin 0.8s linear infinite; margin-bottom:12px; }
-@keyframes spin { to { transform:rotate(360deg); } }
-
-.tab-container { max-width: 1400px; margin: 0 auto; }
-.tab-buttons { display: flex; gap: 10px; margin-bottom: 20px; }
-.tab-btn { padding: 10px 24px; border: none; border-radius: 8px; cursor: pointer; font-size: 15px; color: #fff; background: #16213e; transition: all 0.3s; }
-.tab-btn.active { background: #0f3460; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
-.tab-btn:hover { background: #0f3460; }
-.tab-content { display: none; background: #16213e; border-radius: 12px; padding: 20px; }
-.tab-content.active { display: block; }
-
-.container { display: flex; gap: 20px; flex-wrap: wrap; }
-.left, .right { background: #0f3460; border-radius: 12px; padding: 20px; }
-.left { flex: 1.5; min-width: 320px; }
-.right { flex: 1; min-width: 280px; }
-.video-box { width: 100%; border-radius: 8px; overflow: hidden; background: #000; }
-.video-box img { width: 100%; display: block; }
-.info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 20px; }
-.info-card { background: #1a1a2e; padding: 15px; border-radius: 8px; text-align: center; }
-.info-card .label { font-size: 14px; color: #aaa; margin-bottom: 5px; }
-.info-card .value { font-size: 22px; font-weight: bold; }
-.legend { margin-top: 15px; font-size: 14px; color: #aaa; }
-.legend span { margin-right: 15px; }
-.red { color: #ff4444; } .blue { color: #4488ff; } .green { color: #44ff44; }
-
-.mask-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin-top: 20px; }
-.mask-item { background: #0f3460; border-radius: 8px; padding: 12px; text-align: center; }
-.mask-item img { width: 100%; border-radius: 6px; background: #000; }
-.mask-item .caption { font-size: 13px; color: #aaa; margin-top: 8px; }
-
-.params-section { margin-top: 20px; }
-.params-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
-.param-group { background: #0f3460; padding: 15px; border-radius: 8px; }
-.param-group h4 { font-size: 14px; color: #88ccff; margin-bottom: 15px; padding-bottom: 8px; border-bottom: 1px solid #222; }
-.param-row { margin-bottom: 12px; }
-.param-row label { display: block; font-size: 13px; color: #aaa; margin-bottom: 5px; }
-.param-row input[type="range"] { width: 100%; height: 6px; border-radius: 3px; background: #333; outline: none; }
-.param-row input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #4fc3f7; cursor: pointer; }
-.param-row input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border-radius: 50%; background: #4fc3f7; cursor: pointer; border: none; }
-.param-row .value { font-size: 13px; color: #4fc3f7; font-family: monospace; }
-.param-actions { display: flex; gap: 10px; margin-top: 20px; }
-.btn { padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; color: #fff; }
-.btn-green { background: #2e7d32; }
-.btn-blue { background: #1565c0; }
-.btn-gray { background: #546e7a; }
-.btn:hover { opacity: 0.85; }
-
-.history-section { margin-top: 20px; }
-.filter-bar { display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 15px; align-items: center; }
-.filter-bar select, .filter-bar input, .filter-bar button { padding: 8px 12px; border-radius: 6px; border: 1px solid #333; background: #0f3460; color: #eee; font-size: 13px; }
-.filter-bar button { cursor: pointer; background: #1565c0; border: none; }
-.table-wrapper { overflow-x: auto; }
-.history-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.history-table th, .history-table td { padding: 10px; text-align: left; border-bottom: 1px solid #222; }
-.history-table th { background: #0f3460; color: #aaa; }
-.history-table tr:hover { background: #0f3460; }
-.level-badge { padding: 4px 10px; border-radius: 10px; font-size: 12px; font-weight: bold; }
-.level-normal { background: #2e7d32; }
-.level-notice { background: #ef6c00; }
-.level-warning { background: #c62828; }
-.level-serious { background: #7b0000; }
-.page-bar { display: flex; justify-content: center; align-items: center; gap: 10px; margin-top: 15px; }
-.page-bar button { padding: 6px 12px; border-radius: 4px; border: none; background: #0f3460; color: #eee; cursor: pointer; }
-.page-bar button.active { background: #1565c0; }
-.page-bar button:disabled { opacity: 0.5; cursor: not-allowed; }
-
-.chart-container { background: #0f3460; border-radius: 8px; padding: 20px; margin-top: 20px; }
-.chart-container h4 { font-size: 15px; margin-bottom: 15px; color: #88ccff; }
-canvas { width: 100% !important; }
-
-.gallery-section { margin-top: 20px; }
-.gallery-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; }
-.gallery-header h3 { font-size: 18px; }
-.gallery-actions { display: flex; gap: 10px; }
-.sd-info { font-size: 13px; color: #888; margin-bottom: 10px; }
-.sync-progress { font-size: 13px; color: #4fc3f7; margin-bottom: 8px; min-height: 18px; }
-.sync-progress.error { color: #ff5252; }
-.sync-progress.done { color: #69f0ae; }
-.event-sync-info { font-size: 12px; color: #9ab7d4; margin: 8px 0 12px; min-height: 18px; }
-
-.gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
-.gallery-item { border-radius: 8px; overflow: hidden; background: #0f3460; cursor: pointer; transition: transform 0.2s; }
-.gallery-item:hover { transform: scale(1.03); }
-.gallery-item img { width: 100%; height: 130px; object-fit: cover; display: block; }
-.gallery-item .name { padding: 6px 8px; font-size: 12px; color: #aaa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.gallery-empty { text-align: center; color: #666; padding: 40px; font-size: 16px; }
-
-.toast { position: fixed; top: 20px; right: 20px; padding: 12px 24px; border-radius: 8px; color: #fff; font-size: 14px; z-index: 2000; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
-.toast.show { opacity: 1; }
-.toast-success { background: #2e7d32; }
-.toast-error { background: #c62828; }
-.toast-info { background: #1565c0; }
-
-.modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 1000; justify-content: center; align-items: center; }
-.modal.active { display: flex; }
-.modal img { max-width: 90%; max-height: 90%; border-radius: 8px; }
-.modal-close { position: absolute; top: 20px; right: 30px; font-size: 30px; color: #fff; cursor: pointer; }
-
-.stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 20px; }
-.stat-card { background: #0f3460; padding: 15px; border-radius: 8px; text-align: center; }
-.stat-card .label { font-size: 13px; color: #aaa; }
-.stat-card .value { font-size: 24px; font-weight: bold; }
-
-.engine-section { margin-top: 20px; padding-top: 15px; border-top: 1px solid #333; }
-.engine-section h4 { font-size: 14px; color: #88ccff; margin-bottom: 12px; }
-.engine-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; font-size: 13px; }
-.engine-row .eng-label { color: #aaa; }
-.engine-row .eng-value { font-family: monospace; }
-.conf-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; }
-.conf-high { background: #2e7d32; }
-.conf-medium { background: #ef6c00; }
-.conf-low { background: #546e7a; }
-.agree-tag { display: inline-block; padding: 1px 6px; border-radius: 8px; font-size: 11px; }
-.agree-both { background: #1b5e20; color: #a5d6a7; }
-.agree-yolo { background: #e65100; color: #ffcc80; }
-.agree-color { background: #4a148c; color: #ce93d8; }
-.agree-none { background: #333; color: #888; }
-.yolo-toggle { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-.yolo-toggle label { font-size: 13px; color: #aaa; cursor: pointer; }
-.yolo-toggle input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: #4fc3f7; }
-.engine-status { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
-.engine-on { background: #4caf50; }
-.engine-off { background: #f44336; }
-.legend-yolo { border-bottom: 2px dashed #ff9800; display: inline-block; width: 16px; height: 0; vertical-align: middle; margin-right: 3px; }
-.alert-section { margin-top: 12px; padding-top: 10px; border-top: 1px solid #333; }
-.alert-section h5 { font-size: 13px; color: #ff9800; margin-bottom: 10px; cursor: pointer; user-select: none; }
-.alert-row { margin-bottom: 10px; }
-.alert-row label { display: block; font-size: 12px; color: #aaa; margin-bottom: 4px; }
-.alert-input { width: 100%; padding: 6px 8px; background: #1a1a2e; border: 1px solid #333; border-radius: 4px; color: #e0e0e0; font-size: 12px; box-sizing: border-box; }
-.alert-input:focus { border-color: #ff9800; outline: none; }
-.alert-btn { padding: 5px 14px; border: none; border-radius: 4px; font-size: 12px; cursor: pointer; margin-right: 6px; margin-top: 4px; }
-.alert-btn-test { background: #455a64; color: #e0e0e0; }
-.alert-btn-test:hover { background: #546e7a; }
-.alert-btn-save { background: #ef6c00; color: #fff; }
-.alert-btn-save:hover { background: #f57c00; }
-.alert-log { max-height: 120px; overflow-y: auto; font-size: 11px; color: #888; margin-top: 8px; padding: 6px; background: #111; border-radius: 4px; }
-.alert-log-item { padding: 2px 0; border-bottom: 1px solid #222; }
-</style>
-</head>
-<body>
-<div class="header">
-  <h1>大棚病虫害实时监控系统</h1>
-  <div id="statusBadge" class="status-box status-normal">等待中</div>
-  <div class="camera-selector">
-    <label>摄像头:</label>
-    <select id="cameraSelect" onchange="switchCamera()">
-    </select>
-  </div>
-  <a href="/dashboard" class="dashboard-link" title="监控大屏">&#9638; 大屏</a>
-  <button class="btn btn-diagnose" id="diagnoseBtn" onclick="deepDiagnose()" title="AI深度诊断">&#129504; AI诊断</button>
-</div>
-
-<div class="tab-container">
-  <div class="tab-buttons">
-    <button class="tab-btn active" data-tab="monitor" onclick="switchTab('monitor')">实时监控</button>
-    <button class="tab-btn" data-tab="params" onclick="switchTab('params')">参数调节</button>
-    <button class="tab-btn" data-tab="history" onclick="switchTab('history')">历史记录</button>
-    <button class="tab-btn" data-tab="analytics" onclick="switchTab('analytics')">模型分析</button>
-  </div>
-
-  <!-- 实时监控 Tab -->
-  <div id="tab-monitor" class="tab-content active">
-    <div class="container">
-      <div class="left">
-        <div class="video-box"><img id="videoFeed" src="" alt="实时监控画面"></div>
-        <div class="legend">
-          <span class="red">■ 红框=病斑</span>
-          <span class="blue">■ 蓝框=虫害</span>
-          <span class="green">■ 绿线=叶片轮廓</span>
-          <span><span class="legend-yolo"></span><span style="color:#ff9800">YOLO框</span></span>
-        </div>
-      </div>
-      <div class="right">
-        <h3 style="margin-bottom:15px">实时数据</h3>
-        <div class="info-grid">
-          <div class="info-card"><div class="label">病斑数量</div><div class="value" id="diseaseCount">0</div></div>
-          <div class="info-card"><div class="label">虫害数量</div><div class="value" id="pestCount">0</div></div>
-          <div class="info-card"><div class="label">病斑占比</div><div class="value" id="diseaseRatio">0.0%</div></div>
-          <div class="info-card"><div class="label">虫害占比</div><div class="value" id="pestRatio">0.0%</div></div>
-          <div class="info-card"><div class="label">叶片绿色占比</div><div class="value" id="greenRatio">0.0%</div></div>
-          <div class="info-card"><div class="label">更新次数</div><div class="value" id="updateCount">0</div></div>
-        </div>
-        <div class="engine-section">
-          <h4>双引擎状态</h4>
-          <div class="yolo-toggle">
-            <input type="checkbox" id="yoloEnable" checked onchange="toggleYolo(this.checked)">
-            <label for="yoloEnable">YOLO 引擎 <span id="yoloStatusDot" class="engine-status engine-off"></span><span id="yoloStatusText">加载中</span></label>
-          </div>
-          <div class="engine-row"><span class="eng-label">融合等级</span><span class="eng-value" id="dualLevel">-</span></div>
-          <div class="engine-row"><span class="eng-label">置信度</span><span class="eng-value" id="dualConf">-</span></div>
-          <div class="engine-row"><span class="eng-label">病斑一致性</span><span class="eng-value" id="agreeDisease">-</span></div>
-          <div class="engine-row"><span class="eng-label">虫害一致性</span><span class="eng-value" id="agreeBug">-</span></div>
-          <div class="engine-row"><span class="eng-label">YOLO 病斑</span><span class="eng-value" id="yoloDisease">0</span></div>
-          <div class="engine-row"><span class="eng-label">YOLO 虫害</span><span class="eng-value" id="yoloBug">0</span></div>
-          <div class="engine-row"><span class="eng-label">推理耗时</span><span class="eng-value" id="yoloTime">-</span></div>
-          <div style="margin-top:10px;padding-top:8px;border-top:1px solid #333">
-            <div class="param-row">
-              <label>YOLO 置信度阈值</label>
-              <input type="range" id="yoloConfSlider" min="0.1" max="0.9" step="0.05" value="0.25" oninput="updateYoloConf(this.value)">
-              <div class="value" id="yoloConfVal">0.25</div>
-            </div>
-          </div>
-          <div class="alert-section">
-            <h5 onclick="toggleAlertPanel()">&#9889; 智能告警 <span id="alertToggleHint" style="font-size:11px;color:#666">&#9660;</span></h5>
-            <div id="alertPanel" style="display:none">
-              <div class="alert-row">
-                <label><input type="checkbox" id="alertEnable" style="margin-right:6px;accent-color:#ff9800" onchange="saveAlertConfig()"> 启用钉钉告警</label>
-              </div>
-              <div class="alert-row">
-                <label>Webhook URL</label>
-                <input type="text" class="alert-input" id="alertWebhook" placeholder="已配置的 Webhook 不会回显；重新输入才修改" onblur="saveAlertConfig()">
-              </div>
-              <div class="alert-row">
-                <label>冷却时间 (秒)</label>
-                <input type="range" id="alertCooldown" min="60" max="600" step="30" value="300" style="width:100%;accent-color:#ff9800" oninput="document.getElementById('cooldownVal').textContent=this.value+'s'" onblur="saveAlertConfig()">
-                <div style="font-size:12px;color:#ff9800" id="cooldownVal">300s</div>
-              </div>
-              <div>
-                <button class="alert-btn alert-btn-test" onclick="testAlert()">发送测试</button>
-                <button class="alert-btn alert-btn-save" onclick="saveAlertConfig()">保存配置</button>
-              </div>
-              <div class="alert-log" id="alertLog">暂无告警记录</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-    <div class="chart-container">
-      <h4>双引擎对比 (近50帧)</h4>
-      <div style="display:flex;gap:20px;flex-wrap:wrap">
-        <div style="flex:1;min-width:300px"><canvas id="compareDiseaseChart"></canvas></div>
-        <div style="flex:1;min-width:300px"><canvas id="compareBugChart"></canvas></div>
-      </div>
-    </div>
-    <div class="gallery-section">
-      <div class="gallery-header">
-        <h3>SD 卡图片相册</h3>
-        <div class="gallery-actions">
-          <button class="btn btn-green" onclick="saveToSD()">拍照存卡</button>
-          <button class="btn btn-blue" onclick="syncNow()">立即同步</button>
-        </div>
-      </div>
-      <div class="sd-info" id="sdInfo">等待同步...</div>
-      <div class="sync-progress" id="syncProgress"></div>
-      <div class="event-sync-info" id="eventSyncInfo">事件同步状态加载中...</div>
-      <div class="gallery-grid" id="galleryGrid">
-        <div class="gallery-empty">正在加载...</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- 参数调节 Tab -->
-  <div id="tab-params" class="tab-content">
-    <div class="mask-grid">
-      <div class="mask-item">
-        <img id="maskLeaf" src="" alt="叶片分割">
-        <div class="caption">叶片分割 Mask</div>
-      </div>
-      <div class="mask-item">
-        <img id="maskDisease" src="" alt="病斑">
-        <div class="caption">病斑 Mask</div>
-      </div>
-      <div class="mask-item">
-        <img id="maskPest" src="" alt="虫害">
-        <div class="caption">虫害 Mask</div>
-      </div>
-      <div class="mask-item">
-        <img id="maskAnnotated" src="" alt="标注图">
-        <div class="caption">最终标注图</div>
-      </div>
-    </div>
-    <div class="params-section">
-      <div class="param-actions">
-        <button class="btn btn-blue" onclick="applyParams()">应用参数</button>
-        <button class="btn btn-gray" onclick="resetParams()">重置默认</button>
-        <button class="btn btn-green" onclick="refreshMasks()">刷新预览</button>
-      </div>
-      <div class="params-grid" id="paramsGrid">
-      </div>
-    </div>
-  </div>
-
-  <!-- 历史记录 Tab -->
-  <div id="tab-history" class="tab-content">
-    <div class="stats-grid" id="statsGrid">
-      <div class="stat-card"><div class="label">总检测次数</div><div class="value" id="statTotal">0</div></div>
-      <div class="stat-card"><div class="label">正常</div><div class="value" id="statNormal">0</div></div>
-      <div class="stat-card"><div class="label">注意</div><div class="value" id="statNotice">0</div></div>
-      <div class="stat-card"><div class="label">警告/严重</div><div class="value" id="statWarning">0</div></div>
-    </div>
-    <div class="chart-container">
-      <h4>近7天病虫害趋势</h4>
-      <canvas id="trendChart"></canvas>
-    </div>
-    <div class="history-section">
-      <div class="filter-bar">
-        <input type="date" id="dateFrom" placeholder="起始日期">
-        <input type="date" id="dateTo" placeholder="结束日期">
-        <select id="levelFilter">
-          <option value="">全部等级</option>
-          <option value="正常">正常</option>
-          <option value="注意">注意</option>
-          <option value="警告">警告</option>
-          <option value="严重">严重</option>
-        </select>
-        <button onclick="loadHistory()">查询</button>
-        <button onclick="exportData()">导出数据</button>
-      </div>
-      <div class="table-wrapper">
-        <table class="history-table" id="historyTable">
-          <thead>
-            <tr><th>时间</th><th>等级</th><th>病斑</th><th>虫害</th><th>YOLO</th><th>置信度</th><th>操作</th></tr>
-          </thead>
-          <tbody id="historyBody"></tbody>
-        </table>
-      </div>
-      <div class="page-bar" id="pageBar"></div>
-    </div>
-  </div>
-
-  <!-- 模型分析 Tab -->
-  <div id="tab-analytics" class="tab-content">
-    <div class="stats-grid" style="grid-template-columns:repeat(auto-fit,minmax(140px,1fr))">
-      <div class="stat-card"><div class="label">模型</div><div class="value" id="anaModel" style="font-size:13px">-</div></div>
-      <div class="stat-card"><div class="label">参数量</div><div class="value" id="anaParams" style="font-size:13px">-</div></div>
-      <div class="stat-card"><div class="label">设备</div><div class="value" id="anaDevice" style="font-size:13px">-</div></div>
-      <div class="stat-card"><div class="label">总推理次数</div><div class="value" id="anaInferences">0</div></div>
-      <div class="stat-card"><div class="label">平均耗时</div><div class="value" id="anaAvgMs">0ms</div></div>
-      <div class="stat-card"><div class="label">最近耗时</div><div class="value" id="anaLastMs">0ms</div></div>
-    </div>
-    <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:16px">
-      <div class="chart-container" style="flex:1;min-width:280px">
-        <h4>检测分布</h4>
-        <canvas id="anaDistChart"></canvas>
-      </div>
-      <div class="chart-container" style="flex:1;min-width:280px">
-        <h4>推理耗时趋势 (近50帧)</h4>
-        <canvas id="anaTimeChart"></canvas>
-      </div>
-    </div>
-    <div style="display:flex;gap:20px;flex-wrap:wrap;margin-top:16px">
-      <div class="chart-container" style="flex:1;min-width:280px">
-        <h4>YOLO 置信度趋势</h4>
-        <canvas id="anaConfChart"></canvas>
-      </div>
-      <div class="chart-container" style="flex:1;min-width:280px">
-        <h4>引擎一致性统计</h4>
-        <canvas id="anaAgreeChart"></canvas>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="modal" id="imageModal" onclick="closeModal()">
-  <span class="modal-close">&times;</span>
-  <img id="modalImage" src="" alt="大图">
-</div>
-<div class="toast" id="toast"></div>
-
-<script>
-// 远程部署启用 API token 时，页面用一次性会话输入获得认证；token 不写入 URL。
-(function configureApiAuthentication() {
-    const nativeFetch = window.fetch.bind(window);
-    window.fetch = async function(resource, options) {
-        const requestOptions = Object.assign({}, options || {});
-        const headers = new Headers(requestOptions.headers || {});
-        const token = sessionStorage.getItem('agrivision_api_token') || '';
-        if (token) headers.set('Authorization', 'Bearer ' + token);
-        requestOptions.headers = headers;
-        let response = await nativeFetch(resource, requestOptions);
-        if (response.status === 401 && !token) {
-            const entered = window.prompt('请输入 System B API token（仅保存在本次浏览器会话）');
-            if (entered && entered.trim()) {
-                sessionStorage.setItem('agrivision_api_token', entered.trim());
-                const retryHeaders = new Headers(headers);
-                retryHeaders.set('Authorization', 'Bearer ' + entered.trim());
-                response = await nativeFetch(resource, Object.assign({}, requestOptions, {headers: retryHeaders}));
-            }
-        }
-        return response;
-    };
-})();
-let count = 0;
-let syncPollTimer = null;
-let savePollTimer = null;
-let trendChart = null;
-let currentParams = {};
-let paramInfo = {};
-let previewDebounce = null;
-const statusClasses = {0:'status-normal', 1:'status-notice', 2:'status-warning', 3:'status-serious'};
-
-let currentCameraId = '';
-let camerasList = {};
-
-async function loadCameraList() {
-    try {
-        var resp = await fetch('/api/cameras');
-        var data = await resp.json();
-        camerasList = data.cameras;
-        var select = document.getElementById('cameraSelect');
-        select.innerHTML = '';
-        for (var cid in data.cameras) {
-            var cam = data.cameras[cid];
-            if (cam.enabled) {
-                var opt = document.createElement('option');
-                opt.value = cid;
-                opt.textContent = cam.name;
-                select.appendChild(opt);
-            }
-        }
-        if (!currentCameraId && select.options.length > 0) {
-            currentCameraId = select.options[0].value;
-            select.value = currentCameraId;
-        }
-        if (!currentCameraId) {
-            console.warn('No enabled cameras available');
-        }
-    } catch(e) {
-        console.error('loadCameraList error:', e);
-        document.getElementById('cameraSelect').innerHTML = '<option value="">加载失败</option>';
-    }
-}
-
-function switchCamera() {
-    var sel = document.getElementById('cameraSelect');
-    if (!sel || !sel.value) return;
-    currentCameraId = sel.value;
-    count = 0;
-    updateStatus();
-    loadGallery();
-    loadComparison();
-    // Update video feed
-    document.getElementById('videoFeed').src = '/video_feed/' + currentCameraId;
-}
-
-function apiURL(path) {
-    return path + '?camera_id=' + encodeURIComponent(currentCameraId);
-}
-
-function showToast(msg, type) {
-  var t = document.getElementById('toast');
-  t.textContent = msg;
-  t.className = 'toast toast-' + (type || 'info') + ' show';
-  setTimeout(function(){ t.className = 'toast'; }, 3000);
-}
-
-function switchTab(tabId) {
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
-  document.querySelector('.tab-btn[data-tab="' + tabId + '"]').classList.add('active');
-  document.getElementById('tab-' + tabId).classList.add('active');
-  if (tabId === 'params') {
-    loadParams();
-    refreshMasks();
-  } else if (tabId === 'history') {
-    loadHistory();
-    loadTrend();
-    loadStatistics();
-  } else if (tabId === 'analytics') {
-    loadAnalytics();
-  }
-}
-
-function formatEventSyncStatus(data) {
-  var transport = data.transport || 'none';
-  var pending = Number.isFinite(data.pending) ? data.pending : 0;
-  var succeeded = Number.isFinite(data.batches_succeeded) ? data.batches_succeeded : 0;
-  var failed = Number.isFinite(data.batches_failed) ? data.batches_failed : 0;
-  var connack = Number.isFinite(data.mqtt_connack_timeout_seconds) ? data.mqtt_connack_timeout_seconds.toFixed(1) + 's' : '-';
-  var publish = Number.isFinite(data.mqtt_publish_timeout_seconds) ? data.mqtt_publish_timeout_seconds.toFixed(1) + 's' : '-';
-  var mqttConfig = data.mqtt_config || {};
-  var configState = mqttConfig.configured ? '配置就绪' : '配置待完善';
-  var securityMode = mqttConfig.tls ? 'TLS' : '本机/未启用';
-  var runtimeLabels = {
-    not_started: '未启动',
-    not_configured: '未配置',
-    connecting: '连接中',
-    connected: '已连接',
-    connection_failed: '连接失败',
-    publish_failed: '发布失败'
-  };
-  var runtime = runtimeLabels[data.mqtt_runtime_state] || '未知';
-  return '事件同步: ' + transport + ' | ' + configState + ' | ' + securityMode + ' | MQTT ' + runtime + ' | 待发送 ' + pending + ' | 成功 ' + succeeded + ' | 失败 ' + failed + ' | 握手/发布确认超时 ' + connack + '/' + publish;
-}
-
-async function loadEventSyncStatus() {
-  var target = document.getElementById('eventSyncInfo');
-  if (!target) return;
-  try {
-    const response = await fetch('/api/offline_events/sync_status');
-    if (!response.ok) throw new Error('event sync status unavailable');
-    const data = await response.json();
-    target.textContent = formatEventSyncStatus(data);
-  } catch(e) {
-    target.textContent = '事件同步状态暂不可用';
-  }
-}
-
-async function updateStatus() {
-  try {
-    const data = await (await fetch(apiURL('/api/dual_status'))).json();
-    count++;
-    document.getElementById('statusBadge').textContent = data.level;
-    document.getElementById('statusBadge').className = 'status-box ' + (statusClasses[data.level_code] || 'status-normal');
-    document.getElementById('diseaseCount').textContent = data.disease_count;
-    document.getElementById('pestCount').textContent = data.white_count;
-    document.getElementById('diseaseRatio').textContent = (data.disease_ratio * 100).toFixed(1) + '%';
-    document.getElementById('pestRatio').textContent = (data.white_ratio * 100).toFixed(1) + '%';
-    document.getElementById('greenRatio').textContent = (data.green_ratio * 100).toFixed(1) + '%';
-    document.getElementById('updateCount').textContent = count;
-    // YOLO engine status
-    var dot = document.getElementById('yoloStatusDot');
-    var txt = document.getElementById('yoloStatusText');
-    var cb = document.getElementById('yoloEnable');
-    if (data.yolo_loaded) {
-      dot.className = 'engine-status engine-on';
-      txt.textContent = data.yolo_enabled ? '运行中' : '已禁用';
-    } else {
-      dot.className = 'engine-status engine-off';
-      txt.textContent = '未加载';
-    }
-    cb.checked = data.yolo_enabled;
-    // Dual engine fusion result
-    if (data.dual) {
-      var d = data.dual;
-      document.getElementById('dualLevel').textContent = d.level;
-      var confMap = {high:'高',medium:'中',low:'低'};
-      var confClass = {high:'conf-high',medium:'conf-medium',low:'conf-low'};
-      document.getElementById('dualConf').innerHTML = '<span class="conf-badge '+(confClass[d.confidence]||'conf-low')+'">'+(confMap[d.confidence]||d.confidence)+'</span>';
-      // Agreement tags
-      document.getElementById('agreeDisease').innerHTML = renderAgree(d.agreement.disease);
-      document.getElementById('agreeBug').innerHTML = renderAgree(d.agreement.bug);
-      // YOLO detection counts
-      var yr = d.yolo_result || {};
-      document.getElementById('yoloDisease').textContent = yr.disease_count || 0;
-      document.getElementById('yoloBug').textContent = yr.bug_count || 0;
-      document.getElementById('yoloTime').textContent = yr.inference_ms ? yr.inference_ms.toFixed(1)+'ms' : '-';
-    }
-    if (data.sd_sync) {
-      var sd = data.sd_sync;
-      document.getElementById('sdInfo').textContent =
-        'SD卡: ' + sd.sd_card_files + '张 | 已同步: ' + sd.total_synced + '张 | 上次同步: ' + (sd.last_sync_time || '无');
-      var prog = document.getElementById('syncProgress');
-      if (sd.syncing) {
-        prog.textContent = '⏳ ' + sd.sync_progress;
-        prog.className = 'sync-progress';
-      } else if (sd.sync_error) {
-        prog.textContent = '❌ ' + sd.sync_error;
-        prog.className = 'sync-progress error';
-      } else if (sd.sync_progress) {
-        prog.textContent = '✅ ' + sd.sync_progress;
-        prog.className = 'sync-progress done';
-      }
-    }
-    loadEventSyncStatus();
-    if (data.error) console.error(data.error);
-  } catch(e) { console.error(e); }
-}
-
-function renderAgree(status) {
-  var map = {
-    'agree': ['<span class="agree-tag agree-both">一致</span>'],
-    'yolo_only': ['<span class="agree-tag agree-yolo">仅YOLO</span>'],
-    'color_only': ['<span class="agree-tag agree-color">仅颜色</span>'],
-    'none': ['<span class="agree-tag agree-none">未检出</span>']
-  };
-  return (map[status] || map['none'])[0];
-}
-
-async function toggleYolo(enabled) {
-  try {
-    await fetch('/api/yolo/config', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({enabled: enabled})
-    });
-    showToast('YOLO 引擎已' + (enabled ? '启用' : '禁用'), 'info');
-  } catch(e) { showToast('操作失败: ' + e, 'error'); }
-}
-
-let yoloConfDebounce = null;
-function updateYoloConf(value) {
-  document.getElementById('yoloConfVal').textContent = parseFloat(value).toFixed(2);
-  if (yoloConfDebounce) clearTimeout(yoloConfDebounce);
-  yoloConfDebounce = setTimeout(async function() {
-    try {
-      await fetch('/api/yolo/config', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({conf_threshold: parseFloat(value)})
-      });
-    } catch(e) { console.error(e); }
-  }, 500);
-}
-
-function toggleAlertPanel() {
-  var panel = document.getElementById('alertPanel');
-  var hint = document.getElementById('alertToggleHint');
-  if (panel.style.display === 'none') {
-    panel.style.display = 'block';
-    hint.innerHTML = '&#9650;';
-    loadAlertConfig();
-    loadAlertHistory();
-  } else {
-    panel.style.display = 'none';
-    hint.innerHTML = '&#9660;';
-  }
-}
-
-async function loadAlertConfig() {
-  try {
-    var res = await fetch('/api/alert/config');
-    var data = await res.json();
-    document.getElementById('alertEnable').checked = data.enabled;
-    var webhookInput = document.getElementById('alertWebhook');
-    webhookInput.value = '';
-    webhookInput.placeholder = data.webhook_url_masked
-      ? '已配置: ' + data.webhook_url_masked + '（不会回显）'
-      : '未配置；请输入允许列表中的 HTTPS Webhook';
-    document.getElementById('alertCooldown').value = data.cooldown_seconds || 300;
-    document.getElementById('cooldownVal').textContent = (data.cooldown_seconds || 300) + 's';
-  } catch(e) { console.error('loadAlertConfig error:', e); }
-}
-
-async function saveAlertConfig() {
-  try {
-    var webhookInput = document.getElementById('alertWebhook');
-    var payload = {
-      enabled: document.getElementById('alertEnable').checked,
-      cooldown_seconds: parseInt(document.getElementById('alertCooldown').value) || 300
-    };
-    // 空输入只更新开关/冷却时间，避免安全掩码导致已有 URL 被清空。
-    if (webhookInput.value.trim()) payload.webhook_url = webhookInput.value.trim();
-    await fetch('/api/alert/config', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(payload)
-    });
-  } catch(e) { console.error('saveAlertConfig error:', e); }
-}
-
-async function testAlert() {
-  try {
-    var btn = event.target;
-    btn.textContent = '发送中...';
-    btn.disabled = true;
-    var res = await fetch('/api/alert/test', { method: 'POST' });
-    var data = await res.json();
-    btn.textContent = data.success ? '发送成功' : '发送失败';
-    setTimeout(function() { btn.textContent = '发送测试'; btn.disabled = false; }, 2000);
-  } catch(e) {
-    event.target.textContent = '发送失败';
-    setTimeout(function() { event.target.textContent = '发送测试'; event.target.disabled = false; }, 2000);
-  }
-}
-
-async function loadAlertHistory() {
-  try {
-    var res = await fetch('/api/alert/history');
-    var data = await res.json();
-    var log = document.getElementById('alertLog');
-    if (!data.history || data.history.length === 0) {
-      log.innerHTML = '暂无告警记录';
-      return;
-    }
-    var html = '';
-    data.history.slice(0, 10).forEach(function(item) {
-      html += '<div class="alert-log-item">' + item.timestamp + ' | ' + item.level + ' | 病斑:' + item.disease_count + ' 虫害:' + item.pest_count + '</div>';
-    });
-    log.innerHTML = html || '暂无告警记录';
-  } catch(e) { console.error('loadAlertHistory error:', e); }
-}
-
-async function loadParams() {
-  try {
-    const params = await (await fetch('/api/params')).json();
-    const info = await (await fetch('/api/params/info')).json();
-    currentParams = params;
-    paramInfo = info;
-    
-    const grid = document.getElementById('paramsGrid');
-    const sections = {
-      '叶片分割参数': ['GREEN_ADV', 'H_MIN', 'H_MAX', 'S_MIN', 'V_HIGH_THRESH', 'MIN_AREA_RATIO', 'MORPH_KERNEL_SIZE', 'DILATE_ITERATIONS'],
-      '病斑检测参数': ['BROWN_H_MIN', 'BROWN_H_MAX', 'BROWN_S_MIN', 'YELLOW_H_MIN', 'YELLOW_H_MAX', 'YELLOW_S_MIN', 'DISEASE_MIN_AREA'],
-      '虫害检测参数': ['PEST_S_MAX', 'PEST_V_MIN', 'PEST_MIN_AREA'],
-      '分级阈值参数': ['NOTICE_DISEASE_COUNT', 'NOTICE_DISEASE_RATIO', 'WARNING_DISEASE_COUNT', 'WARNING_DISEASE_RATIO', 'SERIOUS_DISEASE_COUNT', 'SERIOUS_DISEASE_RATIO', 'NOTICE_PEST_COUNT', 'WARNING_PEST_COUNT', 'WARNING_PEST_RATIO', 'SERIOUS_PEST_COUNT', 'SERIOUS_PEST_RATIO', 'GREEN_RATIO_NOTICE', 'GREEN_RATIO_WARNING']
-    };
-    
-    grid.innerHTML = '';
-    for (const [sectionName, keys] of Object.entries(sections)) {
-      var group = document.createElement('div');
-      group.className = 'param-group';
-      group.innerHTML = '<h4>' + sectionName + '</h4>';
-      keys.forEach(key => {
-        if (paramInfo[key]) {
-          var row = document.createElement('div');
-          row.className = 'param-row';
-          var p = paramInfo[key];
-          row.innerHTML = `
-            <label>${p.name}</label>
-            <input type="range" id="param-${key}" min="${p.min}" max="${p.max}" step="${p.step}" value="${params[key]}" oninput="updateParamValue('${key}', this.value)">
-            <div class="value" id="val-${key}">${params[key]}${p.unit}</div>
-          `;
-          group.appendChild(row);
-        }
-      });
-      grid.appendChild(group);
-    }
-  } catch(e) { console.error(e); }
-}
-
-function updateParamValue(key, value) {
-  document.getElementById('val-' + key).textContent = value + (paramInfo[key]?.unit || '');
-  currentParams[key] = parseFloat(value);
-  if (previewDebounce) clearTimeout(previewDebounce);
-  previewDebounce = setTimeout(refreshMasks, 200);
-}
-
-async function refreshMasks() {
-  try {
-    const types = ['leaf', 'disease', 'pest', 'annotated'];
-    types.forEach(async type => {
-      const resp = await fetch(apiURL('/api/preview_mask'), {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({type: type, params: currentParams})
-      });
-      if (resp.ok) {
-        const blob = await resp.blob();
-        document.getElementById('mask' + type.charAt(0).toUpperCase() + type.slice(1)).src = URL.createObjectURL(blob);
-      }
-    });
-  } catch(e) { console.error(e); }
-}
-
-async function applyParams() {
-  try {
-    const resp = await fetch('/api/params', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(currentParams)
-    });
-    const data = await resp.json();
-    if (data.success) {
-      showToast('参数已保存', 'success');
-    } else {
-      showToast(data.message || '保存失败', 'error');
-    }
-  } catch(e) { showToast('请求失败: ' + e, 'error'); }
-}
-
-async function resetParams() {
-  try {
-    const resp = await fetch('/api/params/reset', {method: 'POST'});
-    const data = await resp.json();
-    if (data.success) {
-      currentParams = data.params;
-      loadParams();
-      refreshMasks();
-      showToast('已重置为默认参数', 'success');
-    }
-  } catch(e) { showToast('请求失败: ' + e, 'error'); }
-}
-
-async function loadHistory(page = 1) {
-  try {
-    const dateFrom = document.getElementById('dateFrom').value;
-    const dateTo = document.getElementById('dateTo').value;
-    const level = document.getElementById('levelFilter').value;
-    
-    const resp = await fetch('/api/history?' + new URLSearchParams({
-      page: page,
-      date_from: dateFrom,
-      date_to: dateTo,
-      level: level
-    }));
-    const data = await resp.json();
-    
-    const body = document.getElementById('historyBody');
-    if (data.records.length === 0) {
-      body.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#666">暂无记录</td></tr>';
-    } else {
-      body.innerHTML = '';
-      data.records.forEach(r => {
-        const row = document.createElement('tr');
-        const levelClass = 'level-' + (r.level === '正常' ? 'normal' : r.level === '注意' ? 'notice' : r.level === '警告' ? 'warning' : 'serious');
-        row.innerHTML = `
-          <td>${r.date} ${r.time}</td>
-          <td><span class="level-badge ${levelClass}">${r.level}</span></td>
-          <td>${r.disease_count} (${(r.disease_ratio*100).toFixed(1)}%)</td>
-          <td>${r.white_count} (${(r.white_ratio*100).toFixed(1)}%)</td>
-          <td>${r.yolo_disease_count || 0}病/${r.yolo_bug_count || 0}虫</td>
-          <td>${r.dual_confidence ? '<span class="conf-badge conf-'+(r.dual_confidence==='high'?'high':r.dual_confidence==='medium'?'medium':'low')+'">'+({high:'高',medium:'中',low:'低'}[r.dual_confidence]||r.dual_confidence)+'</span>' : '-'}</td>
-          <td>${r.image_path ? '<button class="btn btn-blue" style="padding:4px 8px;font-size:12px" onclick="openRecordImage(\\''+r.id+'\\')">查看图片</button>' : '-'}</td>
-        `;
-        body.appendChild(row);
-      });
-    }
-    
-    const pageBar = document.getElementById('pageBar');
-    if (data.pages <= 1) {
-      pageBar.innerHTML = '';
-    } else {
-      let html = '<button onclick="loadHistory(1)"' + (page === 1 ? ' disabled' : '') + '>首页</button>';
-      html += '<button onclick="loadHistory(' + (page - 1) + ')"' + (page === 1 ? ' disabled' : '') + '>上一页</button>';
-      html += '<span style="padding:0 10px">第 ' + page + ' / ' + data.pages + ' 页</span>';
-      html += '<button onclick="loadHistory(' + (page + 1) + ')"' + (page === data.pages ? ' disabled' : '') + '>下一页</button>';
-      html += '<button onclick="loadHistory(' + data.pages + ')"' + (page === data.pages ? ' disabled' : '') + '>末页</button>';
-      pageBar.innerHTML = html;
-    }
-  } catch(e) { console.error(e); }
-}
-
-async function loadTrend() {
-  try {
-    const resp = await fetch('/api/history/trend');
-    const data = await resp.json();
-    
-    const ctx = document.getElementById('trendChart').getContext('2d');
-    if (trendChart) trendChart.destroy();
-    
-    trendChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels: data.dates,
-        datasets: [
-          { label: '病斑数量', data: data.disease_counts, borderColor: '#ff4444', tension: 0.3, fill: false },
-          { label: '虫害数量', data: data.pest_counts, borderColor: '#4488ff', tension: 0.3, fill: false }
-        ]
-      },
-      options: {
-        responsive: true,
-        scales: {
-          x: { grid: { color: '#333' }, ticks: { color: '#aaa' } },
-          y: { grid: { color: '#333' }, ticks: { color: '#aaa' }, beginAtZero: true }
-        },
-        plugins: {
-          legend: { labels: { color: '#eee' } }
-        }
-      }
-    });
-  } catch(e) { console.error(e); }
-}
-
-async function loadStatistics() {
-  try {
-    const resp = await fetch('/api/history/statistics');
-    const data = await resp.json();
-    document.getElementById('statTotal').textContent = data.total_records;
-    document.getElementById('statNormal').textContent = data.level_counts['正常'];
-    document.getElementById('statNotice').textContent = data.level_counts['注意'];
-    document.getElementById('statWarning').textContent = data.level_counts['警告'] + '/' + data.level_counts['严重'];
-  } catch(e) { console.error(e); }
-}
-
-async function exportData() {
-  try {
-    const dateFrom = document.getElementById('dateFrom').value;
-    const dateTo = document.getElementById('dateTo').value;
-    
-    const url = '/api/history/export?' + new URLSearchParams({date_from: dateFrom, date_to: dateTo});
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'detection_export.zip';
-    a.click();
-    showToast('数据导出已开始', 'info');
-  } catch(e) { showToast('导出失败: ' + e, 'error'); }
-}
-
-function openRecordImage(recordId) {
-  openModal('/history/image/' + recordId);
-}
-
-async function loadGallery() {
-  try {
-    const files = await (await fetch('/api/sd_images')).json();
-    const grid = document.getElementById('galleryGrid');
-    if (files.length === 0) {
-      grid.innerHTML = '<div class="gallery-empty">暂无图片, 点击"拍照存卡"或等待自动同步</div>';
-      return;
-    }
-    grid.innerHTML = '';
-    files.forEach(function(f) {
-      var div = document.createElement('div');
-      div.className = 'gallery-item';
-      div.onclick = function() { openModal('/dataset/' + encodeURIComponent(f)); };
-      div.innerHTML = '<img src="/dataset/' + encodeURIComponent(f) + '" alt="' + f + '" loading="lazy"><div class="name">' + f + '</div>';
-      grid.appendChild(div);
-    });
-  } catch(e) {
-    console.error(e);
-    document.getElementById('galleryGrid').innerHTML = '<div class="gallery-empty">加载失败，请刷新页面</div>';
-  }
-}
-
-async function saveToSD() {
-  showToast('正在拍照存卡，请稍候...', 'info');
-  try {
-    var resp = await (await fetch(apiURL('/api/save_to_sd'))).json();
-    if (resp.started) {
-      startSavePolling();
-    } else {
-      showToast(resp.message || '拍照任务已在执行', 'info');
-    }
-  } catch(e) { showToast('请求失败: ' + e, 'error'); }
-}
-
-function startSavePolling() {
-  if (savePollTimer) clearInterval(savePollTimer);
-  savePollTimer = setInterval(async function() {
-    try {
-      var data = await (await fetch('/api/save_status')).json();
-      if (data.done) {
-        clearInterval(savePollTimer);
-        savePollTimer = null;
-        if (data.error) {
-          showToast('拍照失败: ' + data.error, 'error');
-        } else {
-          showToast('拍照成功! 文件: ' + data.file, 'success');
-          loadGallery();
-          startSyncPolling();
-        }
-      }
-    } catch(e) { console.error(e); }
-  }, 2000);
-}
-
-function startSyncPolling() {
-  if (syncPollTimer) clearInterval(syncPollTimer);
-  syncPollTimer = setInterval(async function() {
-    try {
-      var data = await (await fetch('/api/sync_status')).json();
-      if (!data.syncing) {
-        clearInterval(syncPollTimer);
-        syncPollTimer = null;
-        loadGallery();
-        if (data.sync_error) {
-          showToast('同步出错: ' + data.sync_error, 'error');
-        } else {
-          showToast('同步完成! 新下载 ' + data.new_downloaded + ' 张', 'success');
-        }
-      }
-    } catch(e) { console.error(e); }
-  }, 2000);
-}
-
-async function syncNow() {
-  try {
-    var resp = await (await fetch(apiURL('/api/sync_now'))).json();
-    if (resp.started) {
-      showToast('同步已启动，请稍候...', 'info');
-      startSyncPolling();
-    } else {
-      showToast(resp.message || '同步已在进行中', 'info');
-    }
-  } catch(e) { showToast('同步请求失败: ' + e, 'error'); }
-}
-
-function openModal(src) {
-  var img = document.getElementById('modalImage');
-  img.src = src;
-  document.getElementById('imageModal').classList.add('active');
-}
-
-function closeModal() {
-  document.getElementById('imageModal').classList.remove('active');
-}
-
-let compareDiseaseChart = null;
-let compareBugChart = null;
-
-async function loadComparison() {
-  try {
-    const data = await (await fetch(apiURL('/api/comparison') + '&n=50')).json();
-    const frames = data.frames || [];
-    if (frames.length === 0) return;
-
-    const labels = frames.map((f,i) => i+1);
-    const colorDisease = frames.map(f => f.color_disease);
-    const yoloDisease = frames.map(f => f.yolo_disease);
-    const colorBug = frames.map(f => f.color_bug);
-    const yoloBug = frames.map(f => f.yolo_bug);
-
-    const chartOpts = {
-      responsive: true,
-      animation: false,
-      scales: {
-        x: { grid: { color: '#333' }, ticks: { color: '#aaa', maxTicksLimit: 10 }, title: { display: true, text: '帧序号', color: '#aaa' } },
-        y: { grid: { color: '#333' }, ticks: { color: '#aaa' }, beginAtZero: true, title: { display: true, text: '数量', color: '#aaa' } }
-      },
-      plugins: { legend: { labels: { color: '#eee' } } }
-    };
-
-    // Disease comparison chart
-    const ctx1 = document.getElementById('compareDiseaseChart').getContext('2d');
-    if (compareDiseaseChart) compareDiseaseChart.destroy();
-    compareDiseaseChart = new Chart(ctx1, {
-      type: 'line',
-      data: {
-        labels: labels,
-        datasets: [
-          { label: '颜色引擎-病斑', data: colorDisease, borderColor: '#ff4444', backgroundColor: 'rgba(255,68,68,0.1)', tension: 0.2, fill: false, pointRadius: 0 },
-          { label: 'YOLO-病斑', data: yoloDisease, borderColor: '#ff9800', backgroundColor: 'rgba(255,152,0,0.1)', tension: 0.2, fill: false, pointRadius: 0, borderDash: [5,3] }
-        ]
-      },
-      options: Object.assign({}, chartOpts, { plugins: Object.assign({}, chartOpts.plugins, { title: { display: true, text: '病斑检测对比', color: '#88ccff' } }) })
-    });
-
-    // Bug comparison chart
-    const ctx2 = document.getElementById('compareBugChart').getContext('2d');
-    if (compareBugChart) compareBugChart.destroy();
-    compareBugChart = new Chart(ctx2, {
-      type: 'line',
-      data: {
-        labels: labels,
-        datasets: [
-          { label: '颜色引擎-虫害', data: colorBug, borderColor: '#4488ff', backgroundColor: 'rgba(68,136,255,0.1)', tension: 0.2, fill: false, pointRadius: 0 },
-          { label: 'YOLO-虫害', data: yoloBug, borderColor: '#4caf50', backgroundColor: 'rgba(76,175,80,0.1)', tension: 0.2, fill: false, pointRadius: 0, borderDash: [5,3] }
-        ]
-      },
-      options: Object.assign({}, chartOpts, { plugins: Object.assign({}, chartOpts.plugins, { title: { display: true, text: '虫害检测对比', color: '#88ccff' } }) })
-    });
-  } catch(e) { console.error('Comparison chart error:', e); }
-}
-
-// ============ S7: 模型分析图表 ============
-let anaDistChart = null, anaTimeChart = null, anaConfChart = null, anaAgreeChart = null;
-
-async function loadAnalytics() {
-  try {
-    // 并行获取 YOLO 统计和对比历史
-    var statsRes = await fetch('/api/yolo_stats');
-    var stats = await statsRes.json();
-    var compRes = await fetch(apiURL('/api/comparison') + '&n=50');
-    var compData = await compRes.json();
-    var frames = compData.frames || [];
-
-    // 1. 更新统计卡片
-    document.getElementById('anaModel').textContent = stats.model_name || '-';
-    document.getElementById('anaParams').textContent = stats.model_params || '-';
-    document.getElementById('anaDevice').textContent = stats.device || '-';
-    document.getElementById('anaInferences').textContent = stats.total_inferences || 0;
-    document.getElementById('anaAvgMs').textContent = (stats.avg_inference_ms || 0).toFixed(1) + 'ms';
-    document.getElementById('anaLastMs').textContent = (stats.last_inference_ms || 0).toFixed(1) + 'ms';
-
-    var darkOpts = {
-      responsive: true, animation: false,
-      plugins: { legend: { labels: { color: '#eee' } } },
-      scales: { x: { grid: { color: '#333' }, ticks: { color: '#aaa', maxTicksLimit: 10 } }, y: { grid: { color: '#333' }, ticks: { color: '#aaa' } } }
-    };
-
-    // 2. 检测分布 (环形图)
-    var ctx0 = document.getElementById('anaDistChart').getContext('2d');
-    if (anaDistChart) anaDistChart.destroy();
-    anaDistChart = new Chart(ctx0, {
-      type: 'doughnut',
-      data: {
-        labels: ['YOLO-病斑', 'YOLO-虫害'],
-        datasets: [{ data: [stats.disease_detections || 0, stats.bug_detections || 0], backgroundColor: ['#ff9800', '#4caf50'], borderColor: ['#e65100', '#2e7d32'], borderWidth: 2 }]
-      },
-      options: { responsive: true, animation: false, plugins: { legend: { labels: { color: '#eee' } } } }
-    });
-
-    // 3. 推理耗时趋势
-    if (frames.length > 0) {
-      var labels = frames.map(function(f,i){ return i+1; });
-      var msData = frames.map(function(f){ return f.inference_ms || 0; });
-      var ctx1 = document.getElementById('anaTimeChart').getContext('2d');
-      if (anaTimeChart) anaTimeChart.destroy();
-      anaTimeChart = new Chart(ctx1, {
-        type: 'line',
-        data: { labels: labels, datasets: [{ label: '耗时(ms)', data: msData, borderColor: '#4fc3f7', backgroundColor: 'rgba(79,195,247,0.1)', tension: 0.3, fill: true, pointRadius: 0 }] },
-        options: Object.assign({}, darkOpts, { scales: Object.assign({}, darkOpts.scales, { y: Object.assign({}, darkOpts.scales.y, { beginAtZero: true, title: { display: true, text: 'ms', color: '#aaa' } } ) }) })
-      });
-
-      // 4. 置信度趋势
-      var diseaseConf = frames.map(function(f){ return f.yolo_disease_conf || 0; });
-      var bugConf = frames.map(function(f){ return f.yolo_bug_conf || 0; });
-      var ctx2 = document.getElementById('anaConfChart').getContext('2d');
-      if (anaConfChart) anaConfChart.destroy();
-      anaConfChart = new Chart(ctx2, {
-        type: 'line',
-        data: { labels: labels, datasets: [
-          { label: '病斑置信度', data: diseaseConf, borderColor: '#ff9800', tension: 0.3, fill: false, pointRadius: 0 },
-          { label: '虫害置信度', data: bugConf, borderColor: '#4caf50', tension: 0.3, fill: false, pointRadius: 0 }
-        ]},
-        options: Object.assign({}, darkOpts, { scales: Object.assign({}, darkOpts.scales, { y: Object.assign({}, darkOpts.scales.y, { beginAtZero: true, max: 1, title: { display: true, text: '置信度', color: '#aaa' } } ) }) })
-      });
-
-      // 5. 引擎一致性统计 (堆叠柱状图)
-      var agreeCount = 0, yoloOnlyCount = 0, colorOnlyCount = 0, noneCount = 0;
-      frames.forEach(function(f) {
-        var yoloHas = (f.yolo_disease > 0 || f.yolo_bug > 0);
-        var colorHas = (f.color_disease > 0 || f.color_bug > 0);
-        if (yoloHas && colorHas) agreeCount++;
-        else if (yoloHas && !colorHas) yoloOnlyCount++;
-        else if (!yoloHas && colorHas) colorOnlyCount++;
-        else noneCount++;
-      });
-      var ctx3 = document.getElementById('anaAgreeChart').getContext('2d');
-      if (anaAgreeChart) anaAgreeChart.destroy();
-      anaAgreeChart = new Chart(ctx3, {
-        type: 'bar',
-        data: {
-          labels: ['一致性统计'],
-          datasets: [
-            { label: '双引擎一致', data: [agreeCount], backgroundColor: '#2e7d32' },
-            { label: '仅YOLO', data: [yoloOnlyCount], backgroundColor: '#ff9800' },
-            { label: '仅颜色', data: [colorOnlyCount], backgroundColor: '#ef6c00' },
-            { label: '均未检出', data: [noneCount], backgroundColor: '#546e7a' }
-          ]
-        },
-        options: Object.assign({}, darkOpts, { scales: Object.assign({}, darkOpts.scales, { x: Object.assign({}, darkOpts.scales.x, { stacked: true }), y: Object.assign({}, darkOpts.scales.y, { stacked: true, beginAtZero: true }) }), plugins: Object.assign({}, darkOpts.plugins, { title: { display: true, text: '近' + frames.length + '帧引擎一致性', color: '#88ccff' } }) })
-      });
-    }
-  } catch(e) { console.error('loadAnalytics error:', e); }
-}
-
-// 启动时加载摄像头列表
-loadCameraList().then(function() {
-    document.getElementById('videoFeed').src = '/video_feed/' + currentCameraId;
-    setInterval(updateStatus, 2000);
-    setInterval(loadGallery, 60000);
-    setInterval(loadComparison, 10000);
-    updateStatus();
-    loadGallery();
-    loadComparison();
-});
-
-// One-time sync of YOLO confidence slider
-fetch('/api/yolo_stats').then(r => r.json()).then(stats => {
-  if (stats.conf_threshold) {
-    document.getElementById('yoloConfSlider').value = stats.conf_threshold;
-    document.getElementById('yoloConfVal').textContent = stats.conf_threshold.toFixed(2);
-  }
-}).catch(()=>{});
-
-// === AI 深度诊断 ===
-function deepDiagnose() {
-  var btn = document.getElementById('diagnoseBtn');
-  var modal = document.getElementById('reportModal');
-  var textEl = document.getElementById('reportText');
-  var loadingEl = document.getElementById('reportLoading');
-  btn.disabled = true;
-  btn.textContent = '\u23F3 \u8BCA\u65AD\u4E2D...';
-  textEl.textContent = '';
-  loadingEl.style.display = 'block';
-  textEl.style.display = 'none';
-  modal.classList.add('show');
-
-  fetch('/api/deep_diagnose', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({camera_id: currentCameraId})
-  }).then(function(r) { return r.json(); }).then(function(data) {
-    loadingEl.style.display = 'none';
-    textEl.style.display = 'block';
-    btn.disabled = false;
-    btn.innerHTML = '&#129504; AI\u8BCA\u65AD';
-    if (data.error) {
-      textEl.textContent = '\u8BCA\u65AD\u5931\u8D25: ' + data.error;
-      return;
-    }
-    // 打字机效果展示报告
-    var report = data.report || '\u672A\u8FD4\u56DE\u62A5\u544A\u5185\u5BB9';
-    var idx = 0;
-    textEl.textContent = '';
-    function typeChar() {
-      if (idx < report.length) {
-        textEl.textContent += report.charAt(idx);
-        idx++;
-        setTimeout(typeChar, 30);
-      }
-    }
-    typeChar();
-  }).catch(function(e) {
-    loadingEl.style.display = 'none';
-    textEl.style.display = 'block';
-    textEl.textContent = '\u8BF7\u6C42\u5931\u8D25: ' + e.message;
-    btn.disabled = false;
-    btn.innerHTML = '&#129504; AI\u8BCA\u65AD';
-  });
-}
-function closeReport() {
-  document.getElementById('reportModal').classList.remove('show');
-}
-</script>
-<!-- AI诊断报告弹窗 -->
-<div class="report-modal" id="reportModal">
-  <div class="report-modal-content">
-    <button class="report-close" onclick="closeReport()">&times;</button>
-    <h2>&#129504; AI \u6DF1\u5EA6\u8BCA\u65AD\u62A5\u544A</h2>
-    <div class="report-loading" id="reportLoading"><div class="spinner"></div><br>\u6B63\u5728\u5206\u6790\u56FE\u50CF\uFF0C\u8BF7\u7A0D\u5019...</div>
-    <div class="report-text" id="reportText" style="display:none"></div>
-  </div>
-</div>
-</body>
-</html>"""
+# ========== 网页模板 ==========
+HTML_PAGE = load_page("main.html")
 
 
 # ============================================================
 # Flask 路由 - Web API 接口定义
 # ============================================================
 # 路由分为以下几类:
-#   1. 页面路由:     /                          -> 返回嵌入的 HTML 页面
+#   1. 页面路由:     /                          -> 返回 templates/main.html
 #   2. 摄像头接口:   /api/cameras               -> 获取所有摄像头配置
 #   3. 状态接口:     /api/status                -> 获取实时检测结果
 #   4. 参数接口:     /api/params (GET/POST)     -> 读取/保存检测参数
@@ -2257,302 +1059,58 @@ function closeReport() {
 
 # ---------- 1. 页面路由 ----------
 # 根路由: 返回完整的单页面 HTML（包含 CSS + JavaScript）
-# 前端代码以 Python 字符串形式嵌入在 HTML_PAGE 变量中
-@app.route('/')
-def index():
-    return HTML_PAGE
+# HTML_PAGE 由 page_templates.py 从 templates/main.html 加载
+# 页面路由由 routes/pages.py 统一注册。
 
 
 # /api/yolo/config: 更新 YOLO 检测参数
-@app.route('/api/yolo/config', methods=['POST'])
-def api_yolo_config():
-    global yolo_enabled
-    try:
-        params = validate_yolo_patch(request.get_json(silent=True))
-        if 'enabled' in params:
-            yolo_enabled = params['enabled']
-            print(f"[API] YOLO 引擎: {'启用' if yolo_enabled else '禁用'}")
-        if 'conf_threshold' in params or 'iou_threshold' in params:
-            yolo_detector.update_config(
-                conf_threshold=params.get('conf_threshold'),
-                iou_threshold=params.get('iou_threshold')
-            )
-        if 'dual_yolo_conf_high' in params:
-            dual_verifier.yolo_conf_high = float(params['dual_yolo_conf_high'])
-        if 'dual_yolo_conf_low' in params:
-            dual_verifier.yolo_conf_low = float(params['dual_yolo_conf_low'])
-        return jsonify({"success": True, "message": "YOLO 参数已更新"})
-    except ValueError as error:
-        return jsonify({"success": False, "message": str(error)}), 400
-    except Exception:
-        return jsonify({"success": False, "message": "YOLO 参数更新失败"}), 500
+# YOLO/告警/参数控制路由由 routes/control.py 统一注册。
 
 
 # ---------- 3C. 告警通知接口 ----------
 # GET /api/alert/config:  获取告警通知配置
 # POST /api/alert/config: 更新告警通知配置（webhook_url, enabled, cooldown）
 # GET /api/alert/history: 获取告警历史记录
-@app.route('/api/alert/config', methods=['GET', 'POST'])
-def api_alert_config():
-    if request.method == 'GET':
-        return jsonify(alert_notifier.get_config())
-    else:
-        try:
-            params = validate_alert_patch(request.get_json(silent=True))
-            result = alert_notifier.configure(
-                webhook_url=params.get('webhook_url'),
-                enabled=params.get('enabled'),
-                cooldown=params.get('cooldown_seconds')
-            )
-            return jsonify({"success": True, "config": result})
-        except ValueError as error:
-            return jsonify({"success": False, "message": str(error)}), 400
-        except Exception:
-            return jsonify({"success": False, "message": "告警配置更新失败"}), 500
+# 告警路由由 routes/control.py 统一注册。
 
 
-@app.route('/api/alert/history')
-def api_alert_history():
-    return jsonify({'history': alert_notifier.get_history()})
-
-
-@app.route('/api/alert/test', methods=['POST'])
-def api_alert_test():
-    """发送测试告警"""
-    try:
-        result = alert_notifier.notify(
-            level='测试', level_code=2,
-            disease_count=3, pest_count=1,
-            disease_ratio=0.15, pest_ratio=0.05,
-            confidence='high',
-        )
-        return jsonify({'success': result.get('sent', False), 'reason': result.get('reason', '')})
-    except Exception:
-        return jsonify({'success': False, 'message': '测试告警失败'}), 500
+# 告警历史和测试发送路由由 routes/control.py 统一注册。
 
 
 # ---------- 4. 参数接口 ----------
 # GET:  获取当前检测参数配置（参数字典）
 # POST: 保存新的检测参数（前端传入完整的参数字典覆盖保存）
 # 使用 config_lock 确保参数读写与检测线程的参数读取互斥
-@app.route('/api/params', methods=['GET', 'POST'])
-def api_params():
-    if request.method == 'GET':
-        # 读取当前配置并返回 JSON
-        with config_lock:
-            return jsonify(config_manager.get_current_config())
-    else:
-        # 保存用户修改后的参数
-        try:
-            params = request.get_json(silent=True)
-            is_valid, errors = config_manager.validate_params(params)
-            if not is_valid:
-                return jsonify({"success": False, "errors": errors}), 400
-            with config_lock:
-                config_manager.update_params(params)
-            return jsonify({"success": True, "message": "参数已保存"})
-        except Exception:
-            return jsonify({"success": False, "message": "参数保存失败"}), 500
+# 参数路由由 routes/control.py 统一注册。
 
 
 # 获取参数元信息: 每个参数的显示名称、最小值、最大值、步长、单位
 # 前端根据这些信息动态生成滑块控件
-@app.route('/api/params/info')
-def api_params_info():
-    return jsonify(config_manager.get_param_info())
+# 参数元信息路由由 routes/control.py 统一注册。
 
 
 # 重置参数为默认值: 将配置恢复为 DetectionConfig 的初始值
 # 返回重置后的参数，前端据此刷新滑块显示
-@app.route('/api/params/reset', methods=['POST'])
-def api_params_reset():
-    try:
-        with config_lock:
-            config_manager.reset_config()
-        return jsonify({"success": True, "params": config_manager.get_current_config()})
-    except Exception:
-        return jsonify({"success": False, "message": "参数重置失败"}), 500
+# 参数重置路由由 routes/control.py 统一注册。
 
 
 # ---------- 5. 预览接口 ----------
 # 根据前端传来的参数和 mask 类型，生成对应的分割预览图
 # 前端参数调节页面有四个预览窗口: leaf(叶片分割)、disease(病斑)、pest(虫害)、annotated(标注)
 # 用户拖动滑块时，前端以 200ms 防抖频率调用此接口，实时查看参数效果
-@app.route('/api/preview_mask', methods=['POST'])
-def api_preview_mask():
-    try:
-        camera_id = request.args.get('camera_id', _get_default_camera_id())
-        cam = cameras.get(camera_id)
-        if not cam:
-            return jsonify({"error": "摄像头不存在"}), 404
-        state = cam["state"]
-        
-        data = request.get_json()
-        mask_type = data.get('type', 'leaf')    # mask 类型: leaf/disease/pest/annotated
-        params = data.get('params', {})          # 当前滑块参数值
-
-        # 获取最新的原始图像（未标注），用于生成预览
-        with state["frame_lock"]:
-            image = state["latest_original_image"]
-
-        # 如果尚未获取到图像（系统刚启动），返回错误提示
-        if image is None:
-            return jsonify({"error": "暂无图像"}), 400
-
-        # 调用检测模块的 mask 生成函数，返回 JPEG 编码的字节数据
-        mask_data = generate_mask_image(image, params, mask_type)
-        return Response(mask_data, mimetype='image/jpeg')
-    except Exception:
-        log_event(logger, logging.ERROR, "mask_preview_failed")
-        return jsonify({"error": "预览生成失败"}), 500
+# mask 预览路由由 routes/control.py 统一注册。
 
 
-@app.route('/api/offline_events')
-def api_offline_events():
-    """Return bounded detection events waiting for a future transport worker."""
-    events = offline_event_cache.list_pending()
-    safe_events = [project_event(event) for event in events if isinstance(event, dict)]
-    return jsonify({"count": len(safe_events), "events": safe_events})
+# 离线事件路由由 routes/events.py 统一注册。
 
 
-@app.route('/api/offline_events/ack', methods=['POST'])
-def api_offline_events_ack():
-    """Acknowledge one event after an external transport confirms delivery."""
-    params = request.get_json(silent=True) or {}
-    event_id = params.get("event_id")
-    try:
-        offline_event_cache.ack(event_id)
-    except ValueError as error:
-        return jsonify({"success": False, "error": str(error)}), 400
-    return jsonify({"success": True})
+# HTTP 事件同步路由由 routes/events.py 统一注册。
 
 
-@app.route('/api/offline_events/sync', methods=['POST'])
-def api_offline_events_sync():
-    """Manually sync a bounded batch; remove events only after 2xx delivery."""
-    # Boundary schema enforces the equivalent of: if not isinstance(params, dict): reject.
-    if event_transport is None:
-        return jsonify({"success": False, "error": "event sink is not configured"}), 503
-    if not offline_event_sync_lock.acquire(blocking=False):
-        return jsonify({"success": False, "error": "event sync is already running"}), 409
-
-    try:
-        params = request.get_json(silent=True)
-        try:
-            params = validate_sync_request(params)
-        except ValueError:
-            message = "limit must be an integer from 1 to 100" if isinstance(params, dict) and "limit" in params else "request body must be a JSON object"
-            return jsonify({"success": False, "error": message}), 400
-        limit = params.get("limit", 50)
-
-        events = offline_event_cache.list_pending()[:limit]
-        result = event_transport.sync(events, offline_event_cache.ack)
-        pending = len(offline_event_cache.list_pending())
-        return jsonify({
-            "success": result["sent"] == len(events),
-            "pending": pending,
-            **result,
-        })
-    finally:
-        offline_event_sync_lock.release()
+# MQTT 事件同步路由由 routes/events.py 统一注册。
 
 
-@app.route('/api/offline_events/sync_mqtt', methods=['POST'])
-def api_offline_events_sync_mqtt():
-    """Manually publish a bounded batch through the opt-in MQTT runtime."""
-    # Boundary schema enforces the equivalent of: if not isinstance(params, dict): reject.
-    if not offline_event_sync_lock.acquire(blocking=False):
-        return jsonify({"success": False, "error": "event sync is already running"}), 409
-
-    try:
-        params = request.get_json(silent=True)
-        try:
-            params = validate_sync_request(params)
-        except ValueError:
-            message = "limit must be an integer from 1 to 100" if isinstance(params, dict) and "limit" in params else "request body must be a JSON object"
-            return jsonify({"success": False, "error": message}), 400
-        limit = params.get("limit", 50)
-
-        try:
-            transport = get_mqtt_transport()
-        except Exception:
-            mqtt_config = build_mqtt_config_status(
-                MQTT_BROKER_URL,
-                MQTT_TOPIC,
-                MQTT_CLIENT_ID,
-                MQTT_USERNAME,
-                MQTT_PASSWORD,
-                MQTT_CA_CERTS,
-            )
-            if mqtt_config["configured"]:
-                event_sync_status.record_mqtt_runtime("connection_failed", "runtime")
-                error_code = "mqtt_connection_failed"
-            else:
-                event_sync_status.record_mqtt_runtime("not_configured")
-                error_code = "mqtt_not_configured"
-            return jsonify({
-                "success": False,
-                "error": "mqtt sync unavailable",
-                "error_code": error_code,
-            }), 503
-
-        events = offline_event_cache.list_pending()[:limit]
-        if not events:
-            event_sync_status.record("empty", "mqtt", 0)
-            event_sync_status.record_mqtt_runtime("connected")
-            return jsonify({
-                "success": True,
-                "pending": 0,
-                "sent": 0,
-                "acked": 0,
-                "attempts": 0,
-            })
-        result = transport.sync(events, offline_event_cache.ack)
-        pending = len(offline_event_cache.list_pending())
-        outcome = "success" if result["sent"] == len(events) else "failure"
-        event_sync_status.record(
-            outcome,
-            "mqtt",
-            pending,
-            sent=result.get("sent", 0),
-            acked=result.get("acked", 0),
-            failure_type=result.get("failure_type", "") if outcome == "failure" else "",
-        )
-        event_sync_status.record_mqtt_runtime(
-            "connected" if outcome == "success" else "publish_failed",
-            result.get("failure_type", "retry_exhausted") if outcome == "failure" else "",
-        )
-        return jsonify({
-            "success": result["sent"] == len(events),
-            "pending": pending,
-            **result,
-        })
-    finally:
-        offline_event_sync_lock.release()
-
-
-@app.route('/api/offline_events/sync_status')
-def api_offline_events_sync_status():
-    """Return safe operational state for the opt-in background event sync."""
-    transport_name = "mqtt" if MQTT_BROKER_URL else "http" if event_transport is not None else "none"
-    enabled = EVENTS_SYNC_INTERVAL > 0 and transport_name != "none"
-    return jsonify(event_sync_status.snapshot(
-        enabled=enabled,
-        interval_seconds=EVENTS_SYNC_INTERVAL,
-        transport=transport_name,
-        running=event_sync_scheduler.running if event_sync_scheduler is not None else False,
-        pending=len(offline_event_cache.list_pending()),
-        mqtt_connack_timeout=MQTT_CONNACK_TIMEOUT if transport_name == "mqtt" else None,
-        mqtt_publish_timeout=MQTT_PUBLISH_TIMEOUT if transport_name == "mqtt" else None,
-        mqtt_config=build_mqtt_config_status(
-            MQTT_BROKER_URL,
-            MQTT_TOPIC,
-            MQTT_CLIENT_ID,
-            MQTT_USERNAME,
-            MQTT_PASSWORD,
-            MQTT_CA_CERTS,
-        ),
-    ))
+# 事件同步状态路由由 routes/events.py 统一注册。
 
 
 # ---------- 8. MJPEG 视频流接口 ----------
@@ -2561,471 +1119,80 @@ def api_offline_events_sync_status():
 #       浏览器会将每个 chunk 中的 JPEG 帧依次替换显示在 <img> 标签中，形成"视频"效果
 # 帧率: 每 0.5 秒输出一帧（约 2 FPS），因为后台检测每 3 秒才更新一次最新帧，
 #       中间帧是重复的同一张图片，但保持 HTTP 连接不中断
-@app.route('/video_feed/<camera_id>')
-def video_feed(camera_id):
-    cam = cameras.get(camera_id)
-    if not cam:
-        return "Camera not found", 404
-    state = cam["state"]
-    def generate():
-        """MJPEG 帧生成器: 无限循环产生 MJPEG 格式的帧数据"""
-        while True:
-            with state["frame_lock"]:
-                frame = state["latest_frame"]
-                error = state["last_error"]
-            if frame:
-                # 有检测帧时，输出 JPEG 编码的标注图
-                # 格式: --frame 分隔符 + Content-Type 头 + JPEG 数据
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            else:
-                # 尚无检测帧时（系统刚启动），输出一张黑色占位图
-                # 占位图显示"等待中..."或错误信息
-                frame = create_wait_image(error or "等待检测中...")
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
-            # 帧间隔 0.5 秒，控制输出频率
-            time.sleep(0.5)
-    # 返回分块传输响应，MIME 类型为 multipart/x-mixed-replace
-    # boundary=frame 定义了帧分隔符，浏览器据此识别每一帧的边界
-    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
-
-
-# 向后兼容: /video_feed 重定向到默认摄像头
-@app.route('/video_feed')
-def video_feed_default():
-    default_cam = _get_default_camera_id()
-    return video_feed(default_cam)
+# 视频流路由由 routes/video.py 统一注册。
 
 
 # ============================================================
 # Phase 11: A-B 浅连接 - System B 代理调用 System A 深度诊断
 # ============================================================
 
-@app.route('/api/deep_diagnose', methods=['POST'])
-def api_deep_diagnose():
-    """
-    代理端点: 获取当前摄像头帧，发送到 System A /report，返回诊断报告。
-    前端"AI深度诊断"按钮调用此端点。
-    流程:
-      1. 从 cameras[camera_id].state 获取当前帧
-      2. JPEG 编码为字节流
-      3. POST 到 System A 的 /report 端点
-      4. 等待返回（约72秒，LLM 推理较慢）
-      5. 将报告返回给前端
-    """
-    try:
-        params = request.get_json() or {}
-        camera_id = params.get('camera_id', _get_default_camera_id())
-        cam = cameras.get(camera_id)
-        if not cam:
-            return jsonify({"error": "摄像头不存在"}), 404
-
-        state = cam["state"]
-        with state["frame_lock"]:
-            frame = state["latest_frame"]
-            original_image = state["latest_original_image"]
-
-        if frame is None:
-            return jsonify({"error": "暂无画面，请稍后再试"}), 400
-
-        # 优先使用原始图（未标注），如果没有则用标注帧
-        if original_image is not None:
-            _, buf = cv2.imencode('.jpg', original_image)
-            image_bytes = buf.tobytes()
-        else:
-            # frame 已经是 JPEG 字节流，直接使用
-            image_bytes = frame
-
-        # 发送到 System A 的 /report 端点
-        report_url = f"{SYSTEM_A_URL}/report"
-        log_event(logger, logging.INFO, "deep_diagnose_request", camera_id=camera_id)
-
-        resp = requests.post(
-            report_url,
-            files={"file": ("frame.jpg", image_bytes, "image/jpeg")},
-            headers={"Authorization": f"Bearer {SYSTEM_A_API_TOKEN}"} if SYSTEM_A_API_TOKEN else {},
-            timeout=180  # LLM 推理较慢，给足超时
-        )
-
-        if resp.status_code == 200:
-            report_data = resp.json()
-            log_event(logger, logging.INFO, "deep_diagnose_completed", camera_id=camera_id, status=200)
-            return jsonify({"success": True, "report": report_data})
-        else:
-            log_event(logger, logging.WARNING, "deep_diagnose_upstream_failed", camera_id=camera_id, status=resp.status_code)
-            return jsonify({
-                "success": False,
-                "error": f"System A 返回 {resp.status_code}"
-            }), 502
-
-    except requests.exceptions.Timeout:
-        return jsonify({"success": False, "error": "System A 响应超时（LLM推理可能需要2分钟）"}), 504
-    except requests.exceptions.ConnectionError:
-        return jsonify({"success": False, "error": "无法连接 System A，请确认 System A 已启动"}), 503
-    except Exception:
-        log_event(logger, logging.ERROR, "deep_diagnose_failed", stage="runtime")
-        return jsonify({"success": False, "error": "深度诊断失败"}), 500
-
-
-@app.route('/api/system_a/status')
-def api_system_a_status():
-    """检查 System A 是否在线"""
-    try:
-        resp = requests.get(f"{SYSTEM_A_URL}/health", timeout=5)
-        if resp.status_code == 200:
-            return jsonify({"online": True})
-        return jsonify({"online": False})
-    except Exception:
-        return jsonify({"online": False})
+# System A 代理路由由 routes/diagnosis.py 统一注册。
 
 
 # ============================================================
 # Phase 10: 大屏网格视图 - 多摄像头同时监控
 # ============================================================
 
-DASHBOARD_PAGE = """<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AgriVision 监控大屏</title>
-<style>
-* { margin:0; padding:0; box-sizing:border-box; }
-body { background:#0a1628; color:#e0e0e0; font-family:'Microsoft YaHei',sans-serif; overflow:hidden; height:100vh; }
-
-.dashboard-header {
-    background:linear-gradient(135deg,#0d2137,#1a3a5c);
-    padding:12px 24px; display:flex; align-items:center; justify-content:space-between;
-    border-bottom:2px solid #1e5a8a;
-}
-.dashboard-header h1 { font-size:20px; color:#4fc3f7; letter-spacing:2px; }
-.dashboard-header .clock { font-size:14px; color:#81d4fa; }
-.dashboard-header .back-btn {
-    background:#1e3a5f; color:#4fc3f7; border:1px solid #4fc3f7;
-    padding:6px 16px; border-radius:4px; cursor:pointer; font-size:13px; text-decoration:none;
-}
-.dashboard-header .back-btn:hover { background:#2a4a6f; }
-
-.grid-container {
-    display:grid; gap:8px; padding:8px; height:calc(100vh - 56px);
-}
-.grid-1 { grid-template-columns:1fr; }
-.grid-2 { grid-template-columns:1fr 1fr; }
-.grid-3 { grid-template-columns:1fr 1fr 1fr; }
-.grid-4 { grid-template-columns:1fr 1fr; grid-template-rows:1fr 1fr; }
-.grid-6 { grid-template-columns:1fr 1fr 1fr; grid-template-rows:1fr 1fr; }
-.grid-9 { grid-template-columns:1fr 1fr 1fr; grid-template-rows:1fr 1fr 1fr; }
-
-.cam-cell {
-    background:#111d2e; border:2px solid #1e3a5f; border-radius:8px;
-    display:flex; flex-direction:column; overflow:hidden; cursor:pointer;
-    transition:border-color 0.3s, transform 0.2s; position:relative;
-}
-.cam-cell:hover { border-color:#4fc3f7; transform:scale(1.01); }
-.cam-cell.expanded {
-    position:fixed; top:0; left:0; width:100vw; height:100vh;
-    z-index:1000; border-radius:0; border-color:#4fc3f7;
-}
-
-.cam-cell-header {
-    padding:6px 12px; background:rgba(0,0,0,0.4);
-    display:flex; align-items:center; justify-content:space-between;
-    font-size:13px; flex-shrink:0;
-}
-.cam-cell-header .cam-name { color:#81d4fa; font-weight:bold; }
-.cam-cell-header .cam-level {
-    padding:2px 10px; border-radius:10px; font-size:12px; font-weight:bold;
-}
-.level-normal { background:#1b5e20; color:#a5d6a7; }
-.level-notice { background:#e65100; color:#ffcc80; }
-.level-warning { background:#b71c1c; color:#ef9a9a; }
-.level-serious { background:#880e4f; color:#f48fb1; }
-
-.cam-cell-video { flex:1; display:flex; align-items:center; justify-content:center; background:#000; overflow:hidden; }
-.cam-cell-video img { width:100%; height:100%; object-fit:contain; }
-
-.cam-cell-footer {
-    padding:4px 12px; background:rgba(0,0,0,0.4);
-    display:flex; gap:16px; font-size:12px; flex-shrink:0;
-}
-.cam-cell-footer .metric { display:flex; gap:4px; }
-.cam-cell-footer .metric .label { color:#607d8b; }
-.cam-cell-footer .metric .val { color:#b0bec5; }
-
-.cam-cell .close-expand {
-    display:none; position:absolute; top:8px; right:12px;
-    background:rgba(0,0,0,0.6); color:#fff; border:none; border-radius:50%;
-    width:32px; height:32px; font-size:18px; cursor:pointer; z-index:10;
-}
-.cam-cell.expanded .close-expand { display:block; }
-
-.cam-cell .diag-btn {
-    display:none; position:absolute; bottom:50px; right:12px;
-    background:linear-gradient(135deg,#1565c0,#0d47a1); color:#fff;
-    border:none; border-radius:6px; padding:8px 16px; font-size:13px;
-    cursor:pointer; z-index:10;
-}
-.cam-cell.expanded .diag-btn { display:block; }
-.cam-cell .diag-btn:hover { background:linear-gradient(135deg,#1976d2,#1565c0); }
-
-.no-cameras {
-    display:flex; align-items:center; justify-content:center;
-    height:100%; color:#607d8b; font-size:18px;
-}
-
-/* 诊断报告弹窗 */
-.report-overlay {
-    display:none; position:fixed; top:0; left:0; width:100vw; height:100vh;
-    background:rgba(0,0,0,0.8); z-index:2000;
-    align-items:center; justify-content:center;
-}
-.report-overlay.active { display:flex; }
-.report-box {
-    background:#1a2a3a; border:1px solid #4fc3f7; border-radius:12px;
-    width:700px; max-height:80vh; overflow-y:auto; padding:24px;
-}
-.report-box h3 { color:#4fc3f7; margin-bottom:16px; }
-.report-box .report-content { color:#cfd8dc; line-height:1.8; white-space:pre-wrap; font-size:14px; }
-.report-box .close-btn {
-    margin-top:16px; background:#1e3a5f; color:#4fc3f7; border:1px solid #4fc3f7;
-    padding:8px 24px; border-radius:4px; cursor:pointer; float:right;
-}
-.report-loading { color:#81d4fa; font-size:14px; }
-</style>
-</head>
-<body>
-
-<div class="dashboard-header">
-    <h1>AgriVision 智慧农业监控大屏</h1>
-    <span class="clock" id="clock"></span>
-    <a href="/" class="back-btn">返回单视图</a>
-</div>
-
-<div class="grid-container" id="gridContainer">
-    <div class="no-cameras">正在加载摄像头...</div>
-</div>
-
-<!-- 诊断报告弹窗 -->
-<div class="report-overlay" id="reportOverlay">
-    <div class="report-box">
-        <h3>AI 深度诊断报告</h3>
-        <div class="report-content" id="reportContent">
-            <span class="report-loading">正在连接AI诊断引擎...</span>
-        </div>
-        <button class="close-btn" onclick="closeReport()">关闭</button>
-    </div>
-</div>
-
-<script>
-// 大屏页面独立加载，同样支持远程 API token 的会话认证。
-(function configureApiAuthentication() {
-    const nativeFetch = window.fetch.bind(window);
-    window.fetch = async function(resource, options) {
-        const requestOptions = Object.assign({}, options || {});
-        const headers = new Headers(requestOptions.headers || {});
-        const token = sessionStorage.getItem('agrivision_api_token') || '';
-        if (token) headers.set('Authorization', 'Bearer ' + token);
-        requestOptions.headers = headers;
-        let response = await nativeFetch(resource, requestOptions);
-        if (response.status === 401 && !token) {
-            const entered = window.prompt('请输入 System B API token（仅保存在本次浏览器会话）');
-            if (entered && entered.trim()) {
-                sessionStorage.setItem('agrivision_api_token', entered.trim());
-                const retryHeaders = new Headers(headers);
-                retryHeaders.set('Authorization', 'Bearer ' + entered.trim());
-                response = await nativeFetch(resource, Object.assign({}, requestOptions, {headers: retryHeaders}));
-            }
-        }
-        return response;
-    };
-})();
-let dashboardCameras = {};
-let expandedCam = null;
-let statusTimer = null;
-
-// 时钟
-function updateClock() {
-    var now = new Date();
-    document.getElementById('clock').textContent =
-        now.getFullYear() + '-' +
-        String(now.getMonth()+1).padStart(2,'0') + '-' +
-        String(now.getDate()).padStart(2,'0') + ' ' +
-        String(now.getHours()).padStart(2,'0') + ':' +
-        String(now.getMinutes()).padStart(2,'0') + ':' +
-        String(now.getSeconds()).padStart(2,'0');
-}
-setInterval(updateClock, 1000);
-updateClock();
-
-// 加载摄像头列表并构建网格
-async function initDashboard() {
-    try {
-        var resp = await fetch('/api/cameras');
-        var data = await resp.json();
-        dashboardCameras = data.cameras;
-
-        var enabledCams = Object.values(dashboardCameras).filter(c => c.enabled);
-        var container = document.getElementById('gridContainer');
-
-        if (enabledCams.length === 0) {
-            container.innerHTML = '<div class="no-cameras">没有已启用的摄像头</div>';
-            return;
-        }
-
-        // 根据数量选择网格布局
-        var gridClass = 'grid-1';
-        if (enabledCams.length === 2) gridClass = 'grid-2';
-        else if (enabledCams.length === 3) gridClass = 'grid-3';
-        else if (enabledCams.length === 4) gridClass = 'grid-4';
-        else if (enabledCams.length <= 6) gridClass = 'grid-6';
-        else gridClass = 'grid-9';
-        container.className = 'grid-container ' + gridClass;
-
-        container.innerHTML = '';
-        enabledCams.forEach(function(cam) {
-            var cell = document.createElement('div');
-            cell.className = 'cam-cell';
-            cell.id = 'cell-' + cam.id;
-            cell.onclick = function(e) {
-                if (e.target.tagName === 'BUTTON' || e.target.tagName === 'IMG') return;
-                toggleExpand(cam.id);
-            };
-            cell.innerHTML =
-                '<div class="cam-cell-header">' +
-                    '<span class="cam-name">' + cam.name + '</span>' +
-                    '<span class="cam-level level-normal" id="level-' + cam.id + '">等待中</span>' +
-                '</div>' +
-                '<div class="cam-cell-video">' +
-                    '<img id="vid-' + cam.id + '" src="/video_feed/' + cam.id + '" alt="' + cam.name + '">' +
-                '</div>' +
-                '<div class="cam-cell-footer">' +
-                    '<div class="metric"><span class="label">病斑:</span><span class="val" id="dis-' + cam.id + '">0</span></div>' +
-                    '<div class="metric"><span class="label">虫害:</span><span class="val" id="bug-' + cam.id + '">0</span></div>' +
-                    '<div class="metric"><span class="label">绿比:</span><span class="val" id="grn-' + cam.id + '">0%</span></div>' +
-                '</div>' +
-                '<button class="close-expand" onclick="event.stopPropagation();collapseAll()">&times;</button>' +
-                '<button class="diag-btn" onclick="event.stopPropagation();deepDiagnose(\\'' + cam.id + '\\')">AI 深度诊断</button>';
-            container.appendChild(cell);
-        });
-
-        // 开始轮询状态
-        if (statusTimer) clearInterval(statusTimer);
-        statusTimer = setInterval(updateAllStatus, 3000);
-        updateAllStatus();
-    } catch(e) {
-        console.error('initDashboard error:', e);
-        document.getElementById('gridContainer').innerHTML = '<div class="no-cameras">加载失败: ' + e.message + '</div>';
-    }
-}
-
-// 更新所有摄像头状态
-async function updateAllStatus() {
-    for (var cid in dashboardCameras) {
-        if (!dashboardCameras[cid].enabled) continue;
-        try {
-            var resp = await fetch('/api/dual_status?camera_id=' + encodeURIComponent(cid));
-            var data = await resp.json();
-            // 更新等级徽章
-            var levelEl = document.getElementById('level-' + cid);
-            if (levelEl) {
-                levelEl.textContent = data.level;
-                levelEl.className = 'cam-level ' + getLevelClass(data.level_code);
-            }
-            // 更新指标
-            var disEl = document.getElementById('dis-' + cid);
-            var bugEl = document.getElementById('bug-' + cid);
-            var grnEl = document.getElementById('grn-' + cid);
-            if (disEl) disEl.textContent = data.disease_count;
-            if (bugEl) bugEl.textContent = data.white_count;
-            if (grnEl) grnEl.textContent = (data.green_ratio * 100).toFixed(1) + '%';
-        } catch(e) { /* ignore */ }
-    }
-}
-
-function getLevelClass(code) {
-    var map = {0:'level-normal', 1:'level-notice', 2:'level-warning', 3:'level-serious'};
-    return map[code] || 'level-normal';
-}
-
-// 展开/折叠摄像头
-function toggleExpand(camId) {
-    var cell = document.getElementById('cell-' + camId);
-    if (cell.classList.contains('expanded')) {
-        cell.classList.remove('expanded');
-        expandedCam = null;
-    } else {
-        collapseAll();
-        cell.classList.add('expanded');
-        expandedCam = camId;
-    }
-}
-
-function collapseAll() {
-    document.querySelectorAll('.cam-cell.expanded').forEach(function(el) {
-        el.classList.remove('expanded');
-    });
-    expandedCam = null;
-}
-
-// ESC 键关闭展开
-document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape') {
-        collapseAll();
-        closeReport();
-    }
-});
-
-// AI 深度诊断
-async function deepDiagnose(camId) {
-    var overlay = document.getElementById('reportOverlay');
-    var content = document.getElementById('reportContent');
-    overlay.classList.add('active');
-    content.innerHTML = '<span class="report-loading">正在连接AI诊断引擎，请稍候（约2-3分钟）...</span>';
-
-    try {
-        var resp = await fetch('/api/deep_diagnose', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({camera_id: camId})
-        });
-        var data = await resp.json();
-
-        if (data.success && data.report) {
-            // 打字机效果展示报告
-            content.innerHTML = '';
-            var text = data.report.report || data.report.text || JSON.stringify(data.report, null, 2);
-            typeWriter(content, text, 0);
-        } else {
-            content.innerHTML = '<span style="color:#ef5350">诊断失败: ' + (data.error || '未知错误') + '</span>';
-        }
-    } catch(e) {
-        content.innerHTML = '<span style="color:#ef5350">请求失败: ' + e.message + '</span>';
-    }
-}
-
-function typeWriter(el, text, idx) {
-    if (idx < text.length) {
-        el.textContent += text.charAt(idx);
-        setTimeout(function() { typeWriter(el, text, idx + 1); }, 20);
-    }
-}
-
-function closeReport() {
-    document.getElementById('reportOverlay').classList.remove('active');
-}
-
-// 启动
-initDashboard();
-</script>
-</body>
-</html>"""
+DASHBOARD_PAGE = load_page("dashboard.html")
 
 
-@app.route('/dashboard')
-def dashboard():
-    """大屏网格视图 - 同时显示所有摄像头的实时监控"""
-    return DASHBOARD_PAGE
+# 大屏页面路由由 routes/pages.py 统一注册。
+
+
+# ---------- 模块化路由组合 ----------
+# 所有 HTTP 边界现在通过显式依赖注册，避免控制面继续依赖 app.py 的全局变量。
+register_control_routes(
+    app,
+    cameras=cameras,
+    get_default_camera_id=_get_default_camera_id,
+    config_manager=config_manager,
+    config_lock=config_lock,
+    yolo_detector=yolo_detector,
+    get_yolo_enabled=lambda: yolo_enabled,
+    set_yolo_enabled=set_yolo_enabled,
+    dual_verifier=dual_verifier,
+    alert_notifier=alert_notifier,
+    validate_yolo_patch=validate_yolo_patch,
+    validate_alert_patch=validate_alert_patch,
+    issue_session=lambda remote_addr, headers: api_security.issue_session(remote_addr, headers),
+    session_cookie_name=api_security.SESSION_COOKIE_NAME,
+    session_ttl_seconds=api_security.SESSION_TTL_SECONDS,
+    generate_mask_image=generate_mask_image,
+    log_event=log_event,
+    logger=logger,
+)
+register_event_routes(
+    app,
+    offline_event_cache=offline_event_cache,
+    project_event=project_event,
+    event_transport=event_transport,
+    offline_event_sync_lock=offline_event_sync_lock,
+    validate_sync_request=validate_sync_request,
+    get_mqtt_transport=get_mqtt_transport,
+    build_mqtt_config_status=build_mqtt_config_status,
+    get_mqtt_settings=get_mqtt_settings,
+    event_sync_status=event_sync_status,
+    get_scheduler=lambda: event_sync_scheduler,
+    events_sync_interval=EVENTS_SYNC_INTERVAL,
+)
+register_video_routes(
+    app,
+    cameras=cameras,
+    get_default_camera_id=_get_default_camera_id,
+    create_wait_image=create_wait_image,
+)
+register_diagnosis_routes(
+    app,
+    cameras=cameras,
+    get_default_camera_id=_get_default_camera_id,
+    system_a_url=SYSTEM_A_URL,
+    system_a_api_token=SYSTEM_A_API_TOKEN,
+    cv2_module=cv2,
+    requests_module=requests,
+    log_event=log_event,
+    logger=logger,
+)
+register_page_routes(app, HTML_PAGE, DASHBOARD_PAGE)
 
 
 # ============================================================

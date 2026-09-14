@@ -39,7 +39,9 @@ AgriVision/
 ├── system_b\                      # System B: 实时监控系统
 │   ├── core\                      # 核心代码
 │   │   ├── app.py                 # Flask 主应用
-│   │   ├── routes\                # 健康、监控、历史、设备存储路由
+│   │   ├── page_templates.py       # 页面模板加载器
+│   │   ├── templates\              # System B 原生 HTML/CSS/JavaScript 模板
+│   │   ├── routes\                # 页面、控制、事件、视频、诊断及工程路由
 │   │   ├── services\              # 认证/限流、指标等横切服务
 │   │   ├── workers\               # 每摄像头有界任务队列与可停止 worker
 │   │   ├── repositories\          # SQLite 历史数据访问层
@@ -94,7 +96,7 @@ AgriVision/
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | / | 前端页面(frontend.html) |
+| GET | / | 前端页面(由 `system_b/core/templates/main.html` 加载) |
 | GET | /health | 健康检查 |
 | GET | /health/live | 进程存活检查 |
 | GET | /health/ready | 模型就绪检查 |
@@ -190,7 +192,7 @@ ESP32-CAM -> fetch_image() -> run_detection_once()
 | 周期调度 worker | 向对应摄像头任务队列投递检测或同步任务 | 服务运行期间，可停止 |
 | 离线事件调度器 | 有界批次同步与退出清理 | 默认关闭，显式配置后运行 |
 
-队列满或同一摄像头同一任务正在运行时，新的任务会被拒绝而不会无限堆积；`GET /api/tasks` 返回队列深度、运行状态、完成数和失败数。任务 worker 使用 daemon 线程，但服务退出时会主动调用 `stop_all()`。
+队列满或同一摄像头同一任务正在运行时，新的任务会被拒绝而不会无限堆积；任务支持有界重试、取消和停止后重新创建 worker。`GET /api/tasks` 返回队列深度、运行状态、完成数、失败数、取消数和重试数。任务 worker 使用 daemon 线程，但服务退出时会主动调用 `stop_all()` 清空未执行队列。
 
 ### 3.5 System B 工程化模块
 
@@ -202,8 +204,14 @@ System B 以 `app.py` 作为依赖组装入口，业务边界分别位于以下�
 | `routes/history.py` | 历史分页、趋势、统计、导出和图片读取 |
 | `routes/storage.py` | SD 图片、拍照和同步任务触发/状态 |
 | `routes/engineering.py` | `/metrics` 与 `/api/tasks` |
+| `routes/control.py` | YOLO、告警、参数、预览和浏览器会话路由 |
+| `routes/events.py` | 离线事件查询、确认、HTTP/MQTT 同步和状态 |
+| `routes/video.py` | 按摄像头隔离的 MJPEG 视频流 |
+| `routes/diagnosis.py` | System A 代理和上游状态检查 |
+| `routes/pages.py` | 监控首页和大屏页面入口 |
+| `page_templates.py` / `templates/` | 从 UTF-8 模板文件加载监控页面 |
 | `services/metrics.py` | 固定标签的 Prometheus 指标注册表 |
-| `services/security.py` | System B 的 Bearer/X-API-Key、回环开发边界和有界限流 |
+| `services/security.py` | System B 的 Bearer/X-API-Key、回环开发边界、有界限流和媒体会话 |
 | `services/storage.py` | 摄像头文件列表的单层路径、扩展名和数量校验 |
 | `workers/camera_tasks.py` | 每摄像头任务队列、锁、周期调度和停止 |
 | `repositories/history_repository.py` | 参数化 SQLite 查询、索引、迁移和聚合 |
@@ -214,6 +222,8 @@ System A 使用 `system_a/core/security.py` 实施同一 token 环境变量约�
 
 算法评估和现场闭环的严格清单格式、分层指标、校准、OOD/不确定性边界及真实数据验收要求见 [docs/algorithm-evaluation.md](algorithm-evaluation.md)。
 
+System B 路由 Blueprint、参数边界、任务生命周期和远程媒体认证的收口说明见 [docs/architecture-hardening.md](architecture-hardening.md)。
+
 历史服务默认数据库是 `system_b/core/detection_logs/history.db`。旧版 `history.json` 只在数据库为空时迁移一次；日常分页、趋势和统计不会把整个 JSON 文件加载进内存。
 
 ### 3.6 API 端点清单
@@ -222,6 +232,7 @@ System A 使用 `system_a/core/security.py` 实施同一 token 环境变量约�
 |------|------|------|
 | GET | / | 监控主页面(4 Tab SPA) |
 | GET | /video_feed | MJPEG视频流 |
+| POST | /api/auth/session | 将 Bearer token 换成短期浏览器媒体会话 |
 | GET | /api/status | 最新检测结果+SD状态 |
 | GET | /api/dual_status | 双引擎融合结果 |
 | GET | /api/yolo_stats | YOLO运行统计 |
@@ -310,11 +321,12 @@ MQTT 发布器将 Paho `RuntimeError` 与其他发布失败统一纳入有界重
 
 ### 3.7 认证、限流与告警配置
 
-System A 和 System B 使用同一组 token 环境变量。System B 的 `/api/*`、`/metrics`，以及 System A 的推理、异步结果和历史 API 受安全层保护：
+System A 和 System B 使用同一组 token 环境变量。System B 的 `/api/*`、`/metrics`、`/video_feed*`、`/dataset/*` 和 `/history/image/*`，以及 System A 的推理、异步结果和历史 API 受安全层保护：
 
 - 本机无 token 时允许回环开发请求；远程请求默认拒绝。
 - 设置 `AGRIVISION_API_TOKEN` 后使用 `Authorization: Bearer <token>` 或 `X-API-Key`，token 不写入日志和响应。
 - `AGRIVISION_API_RATE_LIMIT_MAX` 与 `AGRIVISION_API_RATE_LIMIT_WINDOW` 控制按来源地址的进程内固定窗口限流。
+- System B 浏览器先用 Bearer token 调用 `/api/auth/session`，得到绑定来源地址、短期有效的 HttpOnly/SameSite cookie；MJPEG、数据集和历史图片不会把 token 放入 URL。脚本客户端也可以继续直接发送认证头。
 - System A 保留 `/health/live`、`/health/ready` 和 `/docs` 公开，便于探针与接口发现；其他业务路径需要认证。System B 调用 System A `/report` 时使用 `AGRIVISION_SYSTEM_A_API_TOKEN`，未设置时回退到 `AGRIVISION_API_TOKEN`。
 - `AGRIVISION_ALERT_WEBHOOK_URL` 仅允许允许列表中的 HTTPS 主机；`AGRIVISION_WEBHOOK_ALLOWED_HOSTS` 显式扩展主机列表。
 - `AGRIVISION_ALERT_WEBHOOK_SECRET` 仅从环境变量读取，用于 HMAC-SHA256 签名；配置接口只返回脱敏主机名，不返回 query token 或 secret。

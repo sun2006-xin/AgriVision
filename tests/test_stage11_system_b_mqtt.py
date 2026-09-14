@@ -7,8 +7,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 
 class Stage11SystemBMqttTests(unittest.TestCase):
     def test_system_b_mqtt_sync_is_explicit_and_lazy(self):
-        source = (ROOT / "system_b" / "core" / "app.py").read_text(encoding="utf-8")
-        self.assertIn("@app.route('/api/offline_events/sync_mqtt', methods=['POST'])", source)
+        app_source = (ROOT / "system_b" / "core" / "app.py").read_text(encoding="utf-8")
+        route_source = (ROOT / "system_b" / "core" / "routes" / "events.py").read_text(encoding="utf-8")
+        source = app_source + "\n" + route_source
+        self.assertIn('@blueprint.post("/api/offline_events/sync_mqtt")', route_source)
         self.assertIn("AGRIVISION_MQTT_BROKER_URL", source)
         self.assertIn("AGRIVISION_MQTT_TOPIC", source)
         self.assertIn("AGRIVISION_MQTT_CLIENT_ID", source)
