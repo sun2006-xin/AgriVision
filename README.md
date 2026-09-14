@@ -221,6 +221,8 @@ AgriVision/
 
 阶段 37 已加入 MQTT 部署前安全预检，实时面板可显示配置是否就绪和 TLS 模式，但不会显示 broker 地址或任何凭据。
 
+阶段 38 已补齐 MQTT 运行时状态闭环：实时面板可区分未配置、连接中、已连接、连接失败和发布失败；状态信息保持脱敏，发布失败仍采用有界重试且不会提前确认离线事件。
+
 公开发布门禁已在 GitHub Actions 对提交 `1c68338` 验证通过：[查看 CI 运行记录](https://github.com/sun2006-xin/AgriVision/actions/runs/34762246684)。
 
 MQTT 契约测试也已在 GitHub Actions 对提交 `de89384` 验证通过：[查看 MQTT CI 运行记录](https://github.com/sun2006-xin/AgriVision/actions/runs/34762437681)。这不代表真实 broker 或 ESP32 已完成联调。

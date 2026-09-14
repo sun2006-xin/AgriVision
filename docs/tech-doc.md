@@ -250,6 +250,8 @@ MQTT 发布器将 Paho `RuntimeError` 与其他发布失败统一纳入有界重
 
 阶段 37 增加 `mqtt_config_status.py` 配置预检。状态接口只返回 `configured`、`scheme`、`tls`、各项是否配置以及固定 `issues` 代码；不连接 broker，也不返回任何原始配置值。远端部署必须使用 TLS，本机回环可使用明文协议进行开发验证。
 
+阶段 38 为 MQTT 增加脱敏运行时状态闭环。状态对象只保留固定生命周期状态和固定失败类别：`not_started`、`not_configured`、`connecting`、`connected`、`connection_failed`、`publish_failed`，以及 `runtime`、`retry_exhausted`、`permanent`。手动同步与后台同步共用同一状态记录；发布重试耗尽仍不确认事件。前端通过白名单映射显示中文状态，不读取或展示异常原文、broker 地址和凭据。
+
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
 ### 3.6 启动方式

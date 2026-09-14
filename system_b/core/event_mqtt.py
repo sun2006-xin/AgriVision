@@ -4,7 +4,10 @@ import json
 import re
 from time import sleep
 
-from event_transport import build_batch_idempotency_key
+try:
+    from .event_transport import build_batch_idempotency_key
+except ImportError:
+    from event_transport import build_batch_idempotency_key
 
 
 _SAFE_TOPIC = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
@@ -68,4 +71,8 @@ class MqttEventTransport:
                 pass
             if attempt < self.max_attempts and self.backoff_seconds:
                 sleep(self.backoff_seconds * attempt)
-        return {"sent": 0, "attempts": self.max_attempts}
+        return {
+            "sent": 0,
+            "attempts": self.max_attempts,
+            "failure_type": "retry_exhausted",
+        }

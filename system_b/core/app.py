@@ -245,19 +245,27 @@ def get_mqtt_transport():
     """Create the MQTT client only after an explicit sync request."""
     global mqtt_transport, mqtt_close
     if mqtt_transport is not None:
+        event_sync_status.record_mqtt_runtime("connected")
         return mqtt_transport
     if not MQTT_BROKER_URL or not MQTT_TOPIC or not MQTT_CLIENT_ID:
+        event_sync_status.record_mqtt_runtime("not_configured")
         raise ValueError("mqtt runtime is not configured")
-    mqtt_transport, mqtt_close = create_paho_transport(
-        MQTT_BROKER_URL,
-        MQTT_TOPIC,
-        MQTT_CLIENT_ID,
-        username=MQTT_USERNAME,
-        password=MQTT_PASSWORD,
-        ca_certs=MQTT_CA_CERTS,
-        connack_timeout=MQTT_CONNACK_TIMEOUT,
-        publish_timeout=MQTT_PUBLISH_TIMEOUT,
-    )
+    event_sync_status.record_mqtt_runtime("connecting")
+    try:
+        mqtt_transport, mqtt_close = create_paho_transport(
+            MQTT_BROKER_URL,
+            MQTT_TOPIC,
+            MQTT_CLIENT_ID,
+            username=MQTT_USERNAME,
+            password=MQTT_PASSWORD,
+            ca_certs=MQTT_CA_CERTS,
+            connack_timeout=MQTT_CONNACK_TIMEOUT,
+            publish_timeout=MQTT_PUBLISH_TIMEOUT,
+        )
+    except Exception:
+        event_sync_status.record_mqtt_runtime("connection_failed", "runtime")
+        raise
+    event_sync_status.record_mqtt_runtime("connected")
     return mqtt_transport
 
 
@@ -293,6 +301,11 @@ def sync_offline_events_once():
             acked=result.get("acked", 0),
             failure_type=result.get("failure_type", "") if outcome == "failure" else "",
         )
+        if transport_name == "mqtt":
+            event_sync_status.record_mqtt_runtime(
+                "connected" if outcome == "success" else "publish_failed",
+                result.get("failure_type", "retry_exhausted") if outcome == "failure" else "",
+            )
         return {**result, "pending": pending}
     except Exception:
         logger.exception("automatic offline event sync failed")
@@ -1401,7 +1414,16 @@ function formatEventSyncStatus(data) {
   var mqttConfig = data.mqtt_config || {};
   var configState = mqttConfig.configured ? '配置就绪' : '配置待完善';
   var securityMode = mqttConfig.tls ? 'TLS' : '本机/未启用';
-  return '事件同步: ' + transport + ' | ' + configState + ' | ' + securityMode + ' | 待发送 ' + pending + ' | 成功 ' + succeeded + ' | 失败 ' + failed + ' | 握手/发布确认超时 ' + connack + '/' + publish;
+  var runtimeLabels = {
+    not_started: '未启动',
+    not_configured: '未配置',
+    connecting: '连接中',
+    connected: '已连接',
+    connection_failed: '连接失败',
+    publish_failed: '发布失败'
+  };
+  var runtime = runtimeLabels[data.mqtt_runtime_state] || '未知';
+  return '事件同步: ' + transport + ' | ' + configState + ' | ' + securityMode + ' | MQTT ' + runtime + ' | 待发送 ' + pending + ' | 成功 ' + succeeded + ' | 失败 ' + failed + ' | 握手/发布确认超时 ' + connack + '/' + publish;
 }
 
 async function loadEventSyncStatus() {
@@ -2596,6 +2618,7 @@ def api_offline_events_sync_mqtt():
         try:
             transport = get_mqtt_transport()
         except Exception:
+            event_sync_status.record_mqtt_runtime("connection_failed", "runtime")
             return jsonify({"success": False, "error": "mqtt runtime is not configured"}), 503
 
         params = request.get_json(silent=True) or {}
@@ -2608,6 +2631,19 @@ def api_offline_events_sync_mqtt():
         events = offline_event_cache.list_pending()[:limit]
         result = transport.sync(events, offline_event_cache.ack)
         pending = len(offline_event_cache.list_pending())
+        outcome = "success" if result["sent"] == len(events) else "failure"
+        event_sync_status.record(
+            outcome,
+            "mqtt",
+            pending,
+            sent=result.get("sent", 0),
+            acked=result.get("acked", 0),
+            failure_type=result.get("failure_type", "") if outcome == "failure" else "",
+        )
+        event_sync_status.record_mqtt_runtime(
+            "connected" if outcome == "success" else "publish_failed",
+            result.get("failure_type", "retry_exhausted") if outcome == "failure" else "",
+        )
         return jsonify({
             "success": result["sent"] == len(events),
             "pending": pending,

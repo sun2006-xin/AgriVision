@@ -29,7 +29,10 @@ class Stage30MqttPublishRuntimeErrorTests(unittest.TestCase):
             acknowledged.append,
         )
 
-        self.assertEqual(result, {"sent": 0, "attempts": 2})
+        self.assertEqual(
+            result,
+            {"sent": 0, "attempts": 2, "failure_type": "retry_exhausted"},
+        )
         self.assertEqual(len(calls), 2)
         self.assertEqual(acknowledged, [])
 

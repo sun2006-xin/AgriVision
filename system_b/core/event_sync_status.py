@@ -7,6 +7,16 @@ import threading
 class EventSyncStatus:
     """Keep bounded counters and timestamps without retaining transport secrets."""
 
+    _MQTT_RUNTIME_STATES = {
+        "not_started",
+        "not_configured",
+        "connecting",
+        "connected",
+        "connection_failed",
+        "publish_failed",
+    }
+    _MQTT_FAILURE_TYPES = {"", "runtime", "retry_exhausted", "permanent"}
+
     def __init__(self):
         self._lock = threading.Lock()
         self._batches_succeeded = 0
@@ -19,6 +29,21 @@ class EventSyncStatus:
         self._last_failure_type = ""
         self._last_attempt_at = ""
         self._last_success_at = ""
+        self._mqtt_runtime_state = "not_started"
+        self._mqtt_failure_type = ""
+
+    def record_mqtt_runtime(self, state, failure_type=""):
+        """Record a bounded MQTT lifecycle state without retaining exception text."""
+        if state not in self._MQTT_RUNTIME_STATES:
+            raise ValueError("unsupported MQTT runtime state")
+        if failure_type not in self._MQTT_FAILURE_TYPES:
+            raise ValueError("unsupported MQTT failure type")
+        with self._lock:
+            self._mqtt_runtime_state = state
+            self._mqtt_failure_type = failure_type if state in {
+                "connection_failed",
+                "publish_failed",
+            } else ""
 
     def record(self, outcome, transport, pending, sent=0, acked=0, error="", failure_type=""):
         if outcome not in {"success", "failure", "empty", "skipped"}:
@@ -73,4 +98,6 @@ class EventSyncStatus:
                 "last_failure_type": self._last_failure_type,
                 "last_attempt_at": self._last_attempt_at,
                 "last_success_at": self._last_success_at,
+                "mqtt_runtime_state": self._mqtt_runtime_state,
+                "mqtt_failure_type": self._mqtt_failure_type,
             }
