@@ -46,7 +46,7 @@ from database import (
     create_task, get_task, update_task,
     cache_get, cache_set, clear_cache,
 )
-from evaluation import assess_confidence
+from evaluation import assess_confidence, assess_probability_vector
 from security import ApiSecurity
 
 # ======================== 路径配置 ========================
@@ -66,6 +66,25 @@ def _confidence_threshold():
 
 
 UNCERTAINTY_THRESHOLD = _confidence_threshold()
+
+
+def _bounded_runtime_float(name, default, lower, upper):
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+    return value if lower <= value <= upper else default
+
+
+UNCERTAINTY_MARGIN_THRESHOLD = _bounded_runtime_float(
+    "AGRIVISION_UNCERTAINTY_MARGIN", 0.15, 0.0, 1.0
+)
+UNCERTAINTY_ENTROPY_THRESHOLD = _bounded_runtime_float(
+    "AGRIVISION_UNCERTAINTY_ENTROPY", 0.75, 0.0, 1.0
+)
+OOD_MAX_PROBABILITY = _bounded_runtime_float(
+    "AGRIVISION_OOD_MAX_PROBABILITY", 0.40, 0.0, 1.0
+)
 
 if not os.path.exists(ONNX_PATH):
     raise FileNotFoundError("请先运行 convert_to_onnx.py 生成 best_model.onnx")
@@ -210,7 +229,13 @@ class PredictResponse(BaseModel):
     class_name: str = Field(alias="class")
     confidence: float
     uncertain: bool = False
+    undetermined: bool = False
+    abstain: bool = False
     confidence_band: str = "medium"
+    decision_status: str = "known"
+    ood_suspected: bool = False
+    uncertainty_reason: str = "none"
+    confidence_semantics: str = "uncalibrated_softmax_score"
     probabilities: dict[str, float]
 
 
@@ -239,7 +264,13 @@ class ClipResponse(BaseModel):
     top_class: str
     top_score: float
     uncertain: bool = False
+    undetermined: bool = False
+    abstain: bool = False
     confidence_band: str = "medium"
+    decision_status: str = "known"
+    ood_suspected: bool = False
+    uncertainty_reason: str = "none"
+    confidence_semantics: str = "uncalibrated_similarity_softmax"
     scores: dict[str, float]  # {类别名: 相似度}
 
 
@@ -333,17 +364,32 @@ def run_predict(contents: bytes) -> dict:
     """ONNX 分类推理"""
     tensor = preprocess_image(contents)
     raw = ort_session.run([output_name], {input_name: tensor})[0]
-    exp = np.exp(raw[0])
+    scores = np.asarray(raw[0], dtype=np.float64)
+    shifted = scores - np.max(scores)
+    exp = np.exp(shifted)
     probs = exp / exp.sum()
     idx = int(np.argmax(probs))
     confidence = round(float(probs[idx]), 4)
-    confidence_info = assess_confidence(confidence, UNCERTAINTY_THRESHOLD)
+    probability_map = {c: float(p) for c, p in zip(CLASS_NAMES, probs)}
+    confidence_info = assess_probability_vector(
+        probability_map,
+        threshold=UNCERTAINTY_THRESHOLD,
+        margin_threshold=UNCERTAINTY_MARGIN_THRESHOLD,
+        entropy_threshold=UNCERTAINTY_ENTROPY_THRESHOLD,
+        ood_max_probability=OOD_MAX_PROBABILITY,
+    )
     return {
         "class": CLASS_NAMES[idx],
         "confidence": confidence,
         "uncertain": confidence_info["uncertain"],
+        "undetermined": confidence_info["undetermined"],
+        "abstain": confidence_info["abstain"],
         "confidence_band": confidence_info["band"],
-        "probabilities": {c: round(float(p), 4) for c, p in zip(CLASS_NAMES, probs)},
+        "decision_status": confidence_info["decision_status"],
+        "ood_suspected": confidence_info["ood_suspected"],
+        "uncertainty_reason": confidence_info["uncertainty_reason"],
+        "confidence_semantics": "uncalibrated_softmax_score",
+        "probabilities": {c: round(float(p), 4) for c, p in probability_map.items()},
     }
 
 
@@ -432,13 +478,26 @@ def run_clip(contents: bytes) -> dict:
         probs = scores.softmax(dim=0)
     top_idx = int(probs.argmax())
     top_score = round(float(probs[top_idx]), 4)
-    confidence_info = assess_confidence(top_score, UNCERTAINTY_THRESHOLD)
+    probability_map = {CLASS_NAMES[i]: float(probs[i]) for i in range(len(CLASS_NAMES))}
+    confidence_info = assess_probability_vector(
+        probability_map,
+        threshold=UNCERTAINTY_THRESHOLD,
+        margin_threshold=UNCERTAINTY_MARGIN_THRESHOLD,
+        entropy_threshold=UNCERTAINTY_ENTROPY_THRESHOLD,
+        ood_max_probability=OOD_MAX_PROBABILITY,
+    )
     return {
         "top_class": CLASS_NAMES[top_idx],
         "top_score": top_score,
         "uncertain": confidence_info["uncertain"],
+        "undetermined": confidence_info["undetermined"],
+        "abstain": confidence_info["abstain"],
         "confidence_band": confidence_info["band"],
-        "scores": {CLASS_NAMES[i]: round(float(probs[i]), 4) for i in range(len(CLASS_NAMES))},
+        "decision_status": confidence_info["decision_status"],
+        "ood_suspected": confidence_info["ood_suspected"],
+        "uncertainty_reason": confidence_info["uncertainty_reason"],
+        "confidence_semantics": "uncalibrated_similarity_softmax",
+        "scores": {label: round(score, 4) for label, score in probability_map.items()},
     }
 
 
@@ -459,10 +518,15 @@ def run_report(contents: bytes, pred: dict, det: dict, seg: dict, clip: dict) ->
     prompt_text = (
         f"你是一位农业植物保护专家。以下是对一张作物叶片的 AI 分析结果：\n"
         f"- 分类模型：{pred['class']}（置信度 {pred['confidence']:.1%}，"
-        f"{'不确定，需人工复核' if pred.get('uncertain') else '可作为辅助证据'}）\n"
+        f"{'不确定，需人工复核' if pred.get('uncertain') else '可作为辅助证据'}；"
+        f"分数未经校准，状态={pred.get('decision_status', 'known')}，"
+        f"原因={pred.get('uncertainty_reason', 'none')}）\n"
         f"- 检测模型：检测到 {det['total_objects']} 个目标，类别为 {boxes_info}\n"
         f"- 分割模型：分割出 {seg['total_objects']} 个区域，{seg_info}\n"
         f"- CLIP 零样本：Top3 相似度为 {clip_info}\n\n"
+        f"注意：上述模型分数是未经校准的辅助证据，不能作为诊断真值；"
+        f"若状态为 uncertain、undetermined 或 ood_suspected，必须明确建议人工复核。"
+        f"LLM 只负责解释已有证据和生成建议，不得替代模型评估真值。\n"
         f"请综合以上结果，用中文给出简洁的诊断报告（200字以内），包含：\n"
         f"1. 最可能的病害/虫害名称及判断依据\n"
         f"2. 严重程度评估\n"

@@ -517,7 +517,9 @@ file: (二进制图片文件)
 
 **注意**: 此接口会先并行运行四引擎（`asyncio.gather`），再调用 LLM 生成报告，响应时间较长（CPU 环境可能需要 30-60 秒）。
 
-分类和 CLIP 响应包含 `uncertain` 与 `confidence_band` 字段。默认情况下分数低于 `0.55` 会标记为不确定，可通过环境变量 `AGRIVISION_UNCERTAINTY_THRESHOLD` 调整；该阈值是筛查提示，不等于经过校准的医学/农业诊断概率。
+分类和 CLIP 响应包含 `uncertain`、`undetermined`、`abstain`、`confidence_band`、`decision_status`、`ood_suspected`、`uncertainty_reason` 和 `confidence_semantics` 字段。默认情况下分数低于 `0.55` 会标记为不确定，可通过环境变量 `AGRIVISION_UNCERTAINTY_THRESHOLD` 调整；同时会检查 top-1 margin 和归一化熵。`undetermined` 表示模型没有足够类别优势，`ood_suspected` 是基于分数/熵的拒识启发式；两者都不是经过独立数据集验证的 OOD 检测器。
+
+所有 System A 模型分数目前均为未经校准的辅助分数，不能直接解释为诊断概率。评估清单、ECE、可靠性分箱、Brier score、按光照/设备/作物切片和现场 FP/FN 统计见 [算法评估与现场闭环](algorithm-evaluation.md)。Qwen2-VL 只负责解释已有分类、检测、分割和 CLIP 证据并生成建议，不得作为诊断真值。
 
 ### 3.7 `POST /diagnose` -- 综合诊断（同步）
 
@@ -1165,7 +1167,7 @@ pm2 restart agrivision-a  # 重启
 
 ### 8.5 模型文件分发
 
-模型文件体积较大，不适合直接放入 Git 仓库。以下是几种分发方案：
+当前公开分支实际包含 `system_a/models/` 和 `system_b/models/` 下的五个小型运行时权重；HuggingFace 缓存不进入 Git。发布前必须确认权重的再分发许可。若未来改用 Git LFS 或独立模型包，需同步更新 README、启动脚本、校验哈希和下载说明。以下方案用于后续迁移：
 
 #### 方案一：对象存储 + 下载脚本
 

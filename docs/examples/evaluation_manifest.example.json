@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "dataset": {
+    "name": "replace-with-your-labeled-validation-set",
+    "version": "2026-09-14",
+    "label_policy": "one image, one primary diagnosis"
+  },
+  "labels": ["健康", "番茄早疫病"],
+  "records": [
+    {
+      "id": "sample-001",
+      "true": "健康",
+      "pred": "健康",
+      "confidence": 0.91,
+      "probabilities": {"健康": 0.91, "番茄早疫病": 0.09},
+      "crop": "番茄",
+      "lighting": "daylight",
+      "device": "esp32-cam-v1",
+      "source": "field",
+      "split": "test",
+      "group_id": "capture-001"
+    },
+    {
+      "id": "sample-002",
+      "true": "番茄早疫病",
+      "pred": "番茄早疫病",
+      "confidence": 0.84,
+      "probabilities": {"健康": 0.16, "番茄早疫病": 0.84},
+      "crop": "番茄",
+      "lighting": "low-light",
+      "device": "esp32-cam-v1",
+      "source": "field",
+      "split": "test",
+      "group_id": "capture-002"
+    }
+  ]
+}

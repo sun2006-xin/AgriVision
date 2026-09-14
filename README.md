@@ -102,7 +102,7 @@ pip install -r requirements-ui-test.txt
 
 ### 3. 准备模型文件
 
-将以下模型文件放入对应目录：
+当前公开分支已包含以下小型运行时权重，克隆后请先确认文件完整；HuggingFace 缓存仍需按指南单独准备：
 
 ```
 system_a/models/
@@ -114,7 +114,7 @@ system_b/models/
 └── yolov8n-seg.pt           # YOLOv8n-seg 分割模型 (COCO预训练)
 ```
 
-> **提示**：模型权重默认不进入 Git 仓库（由 `.gitignore` 排除），需自行训练或按部署说明准备；System A 使用 `best_model.onnx` / `yolov8n.pt`，System B 使用 `best.pt`。ResNet-18 模型可通过 `system_a/core/train_classifier.py` 自行训练，或使用 `convert_to_onnx.py` 从 `.pth` 导出 ONNX。
+> **提示**：当前分支实际追踪 `system_a/models/` 和 `system_b/models/` 下的五个小型权重；`hf_cache/`、数据库、日志和设备配置不进入 Git。发布前仍需确认这些权重的再分发许可；若改用 Git LFS 或独立模型包，必须同步更新本节和部署脚本。System A 使用 `best_model.onnx` / `yolov8n.pt`，System B 使用 `best.pt`。ResNet-18 模型可通过 `system_a/core/train_classifier.py` 自行训练，或使用 `convert_to_onnx.py` 从 `.pth` 导出 ONNX。
 
 依赖文件已使用 `==` 固定版本；Python 统一为 3.10+，公开 CI 使用 Python 3.11。启动脚本会直接安装对应的锁定文件，不再使用无版本安装清单。
 
@@ -159,7 +159,7 @@ AgriVision/
 │   │   ├── convert_to_onnx.py   # PyTorch → ONNX 导出工具
 │   │   ├── deploy_ai.py         # [遗留代码] 早期3类推理工具
 │   │   └── data.yaml            # YOLO 数据集配置
-│   ├── models/                  # 模型文件 (.onnx/.pth, git忽略)
+│   ├── models/                  # 已追踪的小型运行时权重；HF cache 不追踪
 │   ├── .venv/                   # Python 虚拟环境 (git忽略)
 │   └── start.bat                # 快捷启动脚本
 │
@@ -179,7 +179,7 @@ AgriVision/
 │   │   ├── config.py            # 配置管理
 │   │   └── config/              # JSON 配置文件
 │   ├── firmware/                # ESP32-CAM Arduino 固件
-│   └── models/                  # 模型文件 (.pt, git忽略)
+│   └── models/                  # 已追踪的小型运行时权重
 │
 ├── docs/                        # 项目文档
 │   ├── tech-doc.md              # 总体技术文档 (快速入门+架构+部署)
@@ -217,11 +217,20 @@ AgriVision/
 | [总体技术文档](docs/tech-doc.md) | 架构概览、快速启动、服务器部署指引 |
 | [System A 指南](docs/system-a-guide.md) | 五引擎详解、API 文档、模型训练、Nginx 部署 |
 | [System B 指南](docs/system-b-guide.md) | 双引擎架构、多摄像头配置、告警系统、ESP32 固件 |
+| [算法评估与现场闭环](docs/algorithm-evaluation.md) | 严格评估清单、分层指标、校准、OOD/不确定性和多帧融合 |
 | [技术路线图](docs/roadmap.md) | 阶段目标、验收标准与后续迭代方向 |
 
 ## 当前版本说明
 
-阶段 1 已完成稳定运行基线，阶段 2 工程化目标已完成，阶段 3 已完成评估基础；阶段 4–45 持续完善了离线队列、HTTP/MQTT 同步、连接生命周期、错误分类、脱敏状态和本机回归。模型权重默认保留在本地，不随 Git 仓库分发；首次使用前请按文档准备模型文件。
+阶段 1 已完成稳定运行基线，阶段 2 工程化目标已完成，阶段 3 已完成可复现的算法评估与现场闭环基础；真实标注集上的模型指标仍待验收。阶段 4–45 持续完善了离线队列、HTTP/MQTT 同步、连接生命周期、错误分类、脱敏状态和本机回归。当前公开分支追踪五个小型运行时权重，HuggingFace 缓存仍不进入 Git；首次使用前请按文档准备缓存和替代模型文件。
+
+### 阶段 3 算法评估与现场闭环
+
+- `system_a/core/evaluate_predictions.py` 支持严格 JSON 清单：按作物、病害、光照、设备、来源和切分输出分类指标与混淆矩阵。
+- 输出 ECE、可靠性分箱和 Brier score；没有完整概率向量时会明确标记为 `top1`，不会把未校准分数包装成概率。
+- 对 `source=field` 的记录输出现场二值误报/漏报统计；缺少现场样本或二值定义时返回 `available=false`，不填伪造的零。
+- System A 返回 `known`、`uncertain`、`undetermined`、`ood_suspected`、`abstain` 及原因；System B 使用每摄像头独立的衰减加权多帧融合，并保留可审计证据。
+- 示例清单和运行方法见 [算法评估与现场闭环](docs/algorithm-evaluation.md)。当前仓库没有公开真实标注集，示例结果不代表模型性能。
 
 ### 阶段 2 工程化落地
 

@@ -47,6 +47,7 @@ from detection_enhanced import (
     detect_and_annotate, fetch_image, generate_mask_image, classify_level,
     DetectionConfig, TEST_IMAGE_PATH
 )
+from services.temporal_fusion import TemporalFusion
 
 # ---------- 多摄像头配置（从 cameras.json 加载） ----------
 # cameras.json 放在项目根目录
@@ -87,6 +88,10 @@ if os.path.exists(CAMERAS_JSON):
     with open(CAMERAS_JSON, 'r', encoding='utf-8') as _f:
         SYSTEM_A_URL = json.load(_f).get("system_a_url", SYSTEM_A_URL)
 
+# 时序融合参数：窗口内按时间衰减加权投票，并用连续候选帧确认等级切换。
+TEMPORAL_WINDOW_SIZE = 5
+TEMPORAL_MIN_CONSECUTIVE = 3
+
 # 初始化每个摄像头的运行时状态
 for _cid, _c in cameras.items():
     _c["state"] = {
@@ -105,6 +110,10 @@ for _cid, _c in cameras.items():
         "latest_dual_result": None,
         "comparison_history": [],
         "last_save_time": 0,
+        "temporal_fusion": TemporalFusion(
+            window_size=TEMPORAL_WINDOW_SIZE,
+            min_consecutive=TEMPORAL_MIN_CONSECUTIVE,
+        ),
         "frame_lock": threading.Lock(),
     }
 
@@ -422,12 +431,12 @@ def _get_save_sd_info(camera_id=None):
 # 注意: 这些变量会被多个线程同时访问，修改时必须持有对应的锁
 # ============================================================
 
-# 滑动窗口大小: 保留最近 5 帧的检测结果用于计算平均值
-DETECTION_HISTORY_SIZE = 5
+# 兼容旧状态字段；实际融合由每摄像头的 TemporalFusion 管理。
+DETECTION_HISTORY_SIZE = TEMPORAL_WINDOW_SIZE
 
 # 等级变化防抖阈值: 需要连续 LEVEL_CHANGE_THRESHOLD 帧的平均等级都不同于当前等级
 # 才会触发等级切换，有效防止因偶尔一帧误检导致的等级跳变
-LEVEL_CHANGE_THRESHOLD = 3
+LEVEL_CHANGE_THRESHOLD = TEMPORAL_MIN_CONSECUTIVE
 
 # 双引擎对比历史大小
 COMPARISON_HISTORY_SIZE = 100
@@ -624,63 +633,30 @@ def run_detection_once(camera_id=None):
         }
 
         # ============================================================
-        # 第四步: 滑动窗口平均（第一层平滑）
+        # 第四步: 可解释时序融合
         # ============================================================
-        # 在局部变量上计算，不直接修改 state（稍后在锁内统一写入）
-        local_history = list(state["detection_history"])  # 快照
-        local_history.append({
-            "disease_count": result["disease_count"],
-            "white_count": result["white_count"],
-            "disease_ratio": result["disease_ratio"],
-            "white_ratio": result["white_ratio"],
-            "green_ratio": result["green_ratio"],
-            "level_code": result["level_code"],
+        # 每个摄像头拥有独立的融合器：最近帧按时间衰减加权投票，
+        # 连续候选帧达到阈值后才切换稳定等级；同时保留支持度和待切换证据。
+        with frame_lock:
+            temporal_summary = state["temporal_fusion"].update(result)
+        local_history = temporal_summary["recent_frames"]
+        averages = temporal_summary["averages"]
+        avg_disease_count = averages["disease_count"]
+        avg_white_count = averages["white_count"]
+        avg_disease_ratio = averages["disease_ratio"]
+        avg_white_ratio = averages["white_ratio"]
+        avg_green_ratio = averages["green_ratio"]
+        local_stable_code = temporal_summary["stable_level_code"]
+        local_stable_level = temporal_summary["stable_level"]
+        local_counter = temporal_summary["pending_count"]
+        if temporal_summary["level_changed"]:
+            print(f"  [等级变化] {local_stable_level}")
+        comparison_entry.update({
+            'temporal_candidate_level': temporal_summary['candidate_level'],
+            'temporal_stable_level': temporal_summary['stable_level'],
+            'temporal_support': temporal_summary['weighted_support'],
+            'temporal_pending_count': temporal_summary['pending_count'],
         })
-        if len(local_history) > DETECTION_HISTORY_SIZE:
-            local_history = local_history[-DETECTION_HISTORY_SIZE:]
-
-        # 计算滑动窗口平均值
-        # 为什么至少需要 3 帧才计算平均？
-        #   - 1-2 帧时数据太少，平均值没有统计意义，不如直接用当前帧
-        #   - 3 帧起开始平均，可以在保证响应速度的同时有效平滑单帧异常
-        #   - 系统启动后约 9 秒（3帧 x 3秒/帧）即可进入稳定状态
-        if len(local_history) >= 3:
-            avg_disease_count = sum(h["disease_count"] for h in local_history) / len(local_history)
-            avg_white_count = sum(h["white_count"] for h in local_history) / len(local_history)
-            avg_disease_ratio = sum(h["disease_ratio"] for h in local_history) / len(local_history)
-            avg_white_ratio = sum(h["white_ratio"] for h in local_history) / len(local_history)
-            avg_green_ratio = sum(h["green_ratio"] for h in local_history) / len(local_history)
-        else:
-            avg_disease_count = result["disease_count"]
-            avg_white_count = result["white_count"]
-            avg_disease_ratio = result["disease_ratio"]
-            avg_white_ratio = result["white_ratio"]
-            avg_green_ratio = result["green_ratio"]
-
-        # 使用平均后的指标重新计算等级
-        avg_level_code, avg_level_name = classify_level(
-            round(avg_disease_count), avg_disease_ratio,
-            round(avg_white_count), avg_white_ratio,
-            avg_green_ratio, config
-        )
-
-        # ============================================================
-        # 第五步: 等级变化防抖（第二层平滑）
-        # ============================================================
-        # 在局部变量上计算防抖，稍后在锁内写入 state
-        local_stable_code = state["current_stable_level_code"]
-        local_stable_level = state["current_stable_level"]
-        local_counter = state["level_change_counter"]
-
-        if avg_level_code != local_stable_code:
-            local_counter += 1
-            if local_counter >= LEVEL_CHANGE_THRESHOLD:
-                local_stable_code = avg_level_code
-                local_stable_level = avg_level_name
-                local_counter = 0
-                print(f"  [等级变化] {local_stable_level}")
-        else:
-            local_counter = 0
 
         # 构建最终的稳定结果字典
         stable_result = {
@@ -691,6 +667,7 @@ def run_detection_once(camera_id=None):
             "disease_ratio": avg_disease_ratio,
             "white_ratio": avg_white_ratio,
             "green_ratio": avg_green_ratio,
+            "temporal": temporal_summary,
         }
 
         # 将检测摘要写入有界离线队列，供网络恢复后的传输器消费。

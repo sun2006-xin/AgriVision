@@ -1,18 +1,51 @@
-"""Dependency-free evaluation and uncertainty helpers for model predictions."""
+"""Dependency-free evaluation, calibration and uncertainty helpers.
 
+The module deliberately does not load a model.  It evaluates an explicit
+prediction manifest so that published numbers can be reproduced from labels,
+predictions and capture metadata rather than from an opaque runtime state.
+"""
+
+from collections import defaultdict
 import math
+
+
+MANIFEST_SCHEMA_VERSION = 1
+REQUIRED_METADATA_FIELDS = ("crop", "lighting", "device", "source", "split")
+SLICE_DIMENSIONS = ("crop", "disease", "lighting", "device", "source", "split")
+_RECORD_FIELDS = {
+    "id", "true", "pred", "confidence", "probabilities",
+    "crop", "lighting", "device", "source", "split", "group_id",
+    "field_true", "field_pred", "model", "notes",
+}
 
 
 def _safe_ratio(numerator, denominator):
     return numerator / denominator if denominator else 0.0
 
 
+def _finite(value, name):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{name} must be a finite number") from None
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be a finite number")
+    return number
+
+
+def _validate_labels(labels):
+    if not labels or len(set(labels)) != len(labels):
+        raise ValueError("labels must be a non-empty list of unique values")
+    if any(not isinstance(label, str) or not label.strip() for label in labels):
+        raise ValueError("labels must contain non-empty strings")
+    return list(labels)
+
+
 def classification_metrics(y_true, y_pred, labels):
     """Calculate accuracy, confusion matrix and one-vs-rest class metrics."""
     if len(y_true) != len(y_pred):
         raise ValueError("y_true and y_pred must have the same length")
-    if not labels or len(set(labels)) != len(labels):
-        raise ValueError("labels must be a non-empty list of unique values")
+    labels = _validate_labels(labels)
 
     label_set = set(labels)
     if any(value not in label_set for value in [*y_true, *y_pred]):
@@ -24,6 +57,7 @@ def classification_metrics(y_true, y_pred, labels):
         matrix[index[truth]][index[prediction]] += 1
 
     per_class = {}
+    weighted = {"precision": 0.0, "recall": 0.0, "f1": 0.0}
     for label in labels:
         position = index[label]
         true_positive = matrix[position][position]
@@ -32,58 +66,477 @@ def classification_metrics(y_true, y_pred, labels):
         support = sum(matrix[position])
         precision = _safe_ratio(true_positive, true_positive + false_positive)
         recall = _safe_ratio(true_positive, true_positive + false_negative)
+        f1 = _safe_ratio(2 * precision * recall, precision + recall)
         per_class[label] = {
             "precision": precision,
             "recall": recall,
-            "f1": _safe_ratio(2 * precision * recall, precision + recall),
+            "f1": f1,
             "support": support,
         }
+        weighted["precision"] += precision * support
+        weighted["recall"] += recall * support
+        weighted["f1"] += f1 * support
 
     correct = sum(matrix[position][position] for position in range(len(labels)))
+    total = len(y_true)
     return {
-        "support": len(y_true),
+        "support": total,
         "correct": correct,
-        "accuracy": _safe_ratio(correct, len(y_true)),
+        "accuracy": _safe_ratio(correct, total),
         "macro_precision": _safe_ratio(sum(item["precision"] for item in per_class.values()), len(labels)),
         "macro_recall": _safe_ratio(sum(item["recall"] for item in per_class.values()), len(labels)),
         "macro_f1": _safe_ratio(sum(item["f1"] for item in per_class.values()), len(labels)),
+        "weighted_precision": _safe_ratio(weighted["precision"], total),
+        "weighted_recall": _safe_ratio(weighted["recall"], total),
+        "weighted_f1": _safe_ratio(weighted["f1"], total),
         "labels": list(labels),
         "confusion_matrix": matrix,
         "per_class": per_class,
     }
 
 
-def expected_calibration_error(confidences, correct, bins=10):
-    """Calculate ECE using equal-width confidence bins."""
+def _validated_confidences(confidences, correct):
     if len(confidences) != len(correct):
         raise ValueError("confidences and correct must have the same length")
+    values = []
+    for confidence in confidences:
+        value = _finite(confidence, "confidence")
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("confidence must be a finite value between 0 and 1")
+        values.append(value)
+    return values, [bool(value) for value in correct]
+
+
+def reliability_bins(confidences, correct, bins=10):
+    """Return equal-width reliability bins, including empty bins."""
+    if isinstance(bins, bool) or not isinstance(bins, int) or bins <= 0:
+        raise ValueError("bins must be a positive integer")
+    confidences, correct = _validated_confidences(confidences, correct)
+    buckets = [[] for _ in range(bins)]
+    for confidence, is_correct in zip(confidences, correct):
+        bucket = min(int(confidence * bins), bins - 1)
+        buckets[bucket].append((confidence, is_correct))
+
+    result = []
+    for position, bucket in enumerate(buckets):
+        lower = position / bins
+        upper = (position + 1) / bins
+        count = len(bucket)
+        mean_confidence = _safe_ratio(sum(item[0] for item in bucket), count)
+        accuracy = _safe_ratio(sum(int(item[1]) for item in bucket), count)
+        result.append({
+            "bin": position,
+            "lower": lower,
+            "upper": upper,
+            "count": count,
+            "mean_confidence": mean_confidence,
+            "accuracy": accuracy,
+            "gap": abs(mean_confidence - accuracy) if count else 0.0,
+        })
+    return result
+
+
+def expected_calibration_error(confidences, correct, bins=10):
+    """Calculate ECE using equal-width confidence bins."""
+    confidences, correct = _validated_confidences(confidences, correct)
     if bins <= 0:
         raise ValueError("bins must be positive")
     if not confidences:
         return 0.0
-
-    buckets = [[] for _ in range(bins)]
-    for confidence, is_correct in zip(confidences, correct):
-        if not math.isfinite(float(confidence)) or not 0.0 <= confidence <= 1.0:
-            raise ValueError("confidence must be a finite value between 0 and 1")
-        bucket = min(int(confidence * bins), bins - 1)
-        buckets[bucket].append((float(confidence), bool(is_correct)))
-
-    total = len(confidences)
     return sum(
-        len(bucket) / total
-        * abs(sum(confidence for confidence, _ in bucket) / len(bucket)
-              - sum(int(is_correct) for _, is_correct in bucket) / len(bucket))
-        for bucket in buckets if bucket
+        bucket["count"] / len(confidences) * bucket["gap"]
+        for bucket in reliability_bins(confidences, correct, bins)
+        if bucket["count"]
     )
 
 
+def _top1_brier_score(confidences, correct):
+    return _safe_ratio(
+        sum((confidence - int(is_correct)) ** 2 for confidence, is_correct in zip(confidences, correct)),
+        len(confidences),
+    )
+
+
+def _multiclass_brier_score(records, labels):
+    total = 0.0
+    for record in records:
+        probabilities = record["probabilities"]
+        for label in labels:
+            expected = 1.0 if record["true"] == label else 0.0
+            total += (float(probabilities[label]) - expected) ** 2
+    return _safe_ratio(total, len(records))
+
+
+def calibration_metrics(records, labels, bins=10):
+    """Return ECE, Brier score and data for a reliability diagram.
+
+    Full probability vectors produce a multiclass Brier score.  Legacy
+    manifests with only top-1 confidence use an explicitly named top-1 score.
+    Neither score claims that the model has been calibrated; it measures how
+    well the submitted confidence values agree with the supplied labels.
+    """
+    confidences = [record["confidence"] for record in records]
+    correct = [record["true"] == record["pred"] for record in records]
+    ece = expected_calibration_error(confidences, correct, bins)
+    has_full_probabilities = bool(records) and all(
+        isinstance(record.get("probabilities"), dict)
+        and set(record["probabilities"]) == set(labels)
+        for record in records
+    )
+    if has_full_probabilities:
+        brier_score = _multiclass_brier_score(records, labels)
+        brier_mode = "multiclass"
+    else:
+        brier_score = _top1_brier_score(
+            [_finite(record["confidence"], "confidence") for record in records], correct
+        )
+        brier_mode = "top1"
+    return {
+        "ece": ece,
+        "brier_score": brier_score,
+        "brier_mode": brier_mode,
+        "reliability_bins": reliability_bins(confidences, correct, bins),
+        "calibrated": False,
+        "interpretation": "校准评估，不代表模型概率已经校准",
+    }
+
+
+def _validate_record(record, labels=None, require_metadata=False, require_id=False):
+    if not isinstance(record, dict):
+        raise ValueError("each record must be a JSON object")
+    unknown = sorted(set(record) - _RECORD_FIELDS)
+    if unknown:
+        raise ValueError("unknown record field: " + unknown[0])
+    required = {"true", "pred", "confidence"}
+    if require_id:
+        required.add("id")
+    if require_metadata:
+        required.update(REQUIRED_METADATA_FIELDS)
+    missing = sorted(field for field in required if field not in record)
+    if missing:
+        raise ValueError("record is missing required field: " + missing[0])
+    for field in ("true", "pred"):
+        if not isinstance(record[field], str) or not record[field].strip():
+            raise ValueError(f"{field} must be a non-empty string")
+    confidence = _finite(record["confidence"], "confidence")
+    if not 0.0 <= confidence <= 1.0:
+        raise ValueError("confidence must be between 0 and 1")
+    if "id" in record and (
+        not isinstance(record["id"], str) or not record["id"].strip()
+        or len(record["id"]) > 128 or "/" in record["id"] or "\\" in record["id"]
+    ):
+        raise ValueError("id must be a safe non-empty identifier")
+    for field in REQUIRED_METADATA_FIELDS:
+        if field in record and (
+            not isinstance(record[field], str) or not record[field].strip() or len(record[field]) > 128
+        ):
+            raise ValueError(f"{field} must be a non-empty string")
+    if "group_id" in record and (
+        not isinstance(record["group_id"], str) or not record["group_id"].strip()
+        or len(record["group_id"]) > 128
+    ):
+        raise ValueError("group_id must be a non-empty string")
+    if "field_true" in record or "field_pred" in record:
+        if not isinstance(record.get("field_true"), bool) or not isinstance(record.get("field_pred"), bool):
+            raise ValueError("field_true and field_pred must be provided together as booleans")
+    if "probabilities" in record:
+        probabilities = record["probabilities"]
+        if not isinstance(probabilities, dict) or not probabilities:
+            raise ValueError("probabilities must be a non-empty object")
+        if labels is not None and not set(probabilities).issubset(set(labels)):
+            raise ValueError("probabilities contain a label outside labels")
+        probability_sum = 0.0
+        for label, value in probabilities.items():
+            if not isinstance(label, str):
+                raise ValueError("probability labels must be strings")
+            value = _finite(value, "probability")
+            if not 0.0 <= value <= 1.0:
+                raise ValueError("probabilities must be between 0 and 1")
+            probability_sum += value
+        if abs(probability_sum - 1.0) > 0.001:
+            raise ValueError("probabilities must sum to 1")
+
+
+def validate_manifest(payload, require_metadata=True):
+    """Validate and return a JSON-safe evaluation manifest copy.
+
+    Strict manifests require crop, lighting, device, source and split for
+    every sample.  ``group_id`` prevents frames from one capture sequence
+    leaking across train/validation/test splits.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError("manifest must be a JSON object")
+    if payload.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+        raise ValueError(f"schema_version must be {MANIFEST_SCHEMA_VERSION}")
+    labels = payload.get("labels")
+    if not isinstance(labels, list):
+        raise ValueError("manifest labels must be a list")
+    labels = _validate_labels(labels)
+    records = payload.get("records")
+    if not isinstance(records, list) or not records:
+        raise ValueError("manifest records must be a non-empty list")
+    if "dataset" in payload and not isinstance(payload["dataset"], dict):
+        raise ValueError("dataset must be a JSON object")
+
+    allowed_manifest_fields = {"schema_version", "dataset", "labels", "records"}
+    unknown = sorted(set(payload) - allowed_manifest_fields)
+    if unknown:
+        raise ValueError("unknown manifest field: " + unknown[0])
+
+    seen_ids = set()
+    groups = defaultdict(set)
+    for record in records:
+        _validate_record(record, labels, require_metadata=require_metadata, require_id=True)
+        if record["true"] not in labels or record["pred"] not in labels:
+            raise ValueError("record labels must be declared in manifest labels")
+        if record["id"] in seen_ids:
+            raise ValueError("record ids must be unique")
+        seen_ids.add(record["id"])
+        if "probabilities" in record and set(record["probabilities"]) != set(labels):
+            raise ValueError("strict manifest probabilities must include every declared label")
+        if record.get("group_id"):
+            groups[record["group_id"]].add(record["split"])
+    if any(len(splits) > 1 for splits in groups.values()):
+        raise ValueError("group_id must not span multiple dataset splits")
+
+    import json
+    return json.loads(json.dumps({
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "dataset": payload.get("dataset", {}),
+        "labels": labels,
+        "records": records,
+    }, ensure_ascii=False))
+
+
+def _resolve_healthy_label(labels, healthy_label):
+    if healthy_label:
+        return healthy_label
+    for candidate in ("健康", "healthy", "normal"):
+        if candidate in labels:
+            return candidate
+    return None
+
+
+def field_error_rates(records, healthy_label=None, positive_label=None):
+    """Calculate field-screening false-positive and false-negative rates.
+
+    Records may provide explicit ``field_true``/``field_pred`` booleans.  If
+    they do not, a binary screen is derived from a declared healthy label (or
+    a one-vs-rest positive label).  No metric is emitted as available without
+    an explicit binary definition.
+    """
+    records = list(records)
+    result = {
+        "available": False,
+        "sample_count": len(records),
+        "reason": "需要 field_true/field_pred 或 healthy_label/positive_label",
+    }
+    if not records:
+        result["reason"] = "没有 source=field 的记录"
+        return result
+    labels = sorted({record.get("true") for record in records if isinstance(record.get("true"), str)})
+    healthy_label = _resolve_healthy_label(labels, healthy_label)
+    if positive_label is None and healthy_label is None and not all(
+        "field_true" in record and "field_pred" in record for record in records
+    ):
+        return result
+
+    pairs = []
+    for record in records:
+        if "field_true" in record and "field_pred" in record:
+            truth = record["field_true"]
+            prediction = record["field_pred"]
+        elif positive_label is not None:
+            truth = record["true"] == positive_label
+            prediction = record["pred"] == positive_label
+        else:
+            truth = record["true"] != healthy_label
+            prediction = record["pred"] != healthy_label
+        pairs.append((bool(truth), bool(prediction)))
+
+    true_positive = sum(truth and prediction for truth, prediction in pairs)
+    false_positive = sum(not truth and prediction for truth, prediction in pairs)
+    false_negative = sum(truth and not prediction for truth, prediction in pairs)
+    true_negative = sum(not truth and not prediction for truth, prediction in pairs)
+    positive_support = true_positive + false_negative
+    negative_support = true_negative + false_positive
+    result.update({
+        "available": True,
+        "positive_label": positive_label or f"非{healthy_label}",
+        "healthy_label": healthy_label,
+        "sample_count": len(pairs),
+        "true_positive": true_positive,
+        "false_positive": false_positive,
+        "false_negative": false_negative,
+        "true_negative": true_negative,
+        "positive_support": positive_support,
+        "negative_support": negative_support,
+        "false_positive_rate": _safe_ratio(false_positive, negative_support),
+        "false_negative_rate": _safe_ratio(false_negative, positive_support),
+        "precision": _safe_ratio(true_positive, true_positive + false_positive),
+        "recall": _safe_ratio(true_positive, positive_support),
+        "accuracy": _safe_ratio(true_positive + true_negative, len(pairs)),
+    })
+    result.pop("reason", None)
+    return result
+
+
+def _group_summary(records, labels, bins):
+    y_true = [record["true"] for record in records]
+    y_pred = [record["pred"] for record in records]
+    metrics = classification_metrics(y_true, y_pred, labels)
+    calibration = calibration_metrics(records, labels, bins)
+    metrics["ece"] = calibration["ece"]
+    metrics["brier_score"] = calibration["brier_score"]
+    metrics["brier_mode"] = calibration["brier_mode"]
+    return metrics
+
+
+def evaluate_records(records, labels, bins=10, healthy_label=None, positive_label=None,
+                     field_source="field"):
+    """Evaluate records and return overall, slice and field-screening metrics.
+
+    This function retains compatibility with the original three-column
+    ``true/pred/confidence`` records.  Use :func:`evaluate_manifest` for the
+    strict, metadata-complete public evaluation contract.
+    """
+    records = list(records)
+    labels = _validate_labels(labels)
+    for record in records:
+        _validate_record(record, labels, require_metadata=False, require_id=False)
+        if record["true"] not in labels or record["pred"] not in labels:
+            raise ValueError("record labels must be declared in labels")
+
+    result = _group_summary(records, labels, bins)
+    result["calibration"] = calibration_metrics(records, labels, bins)
+
+    field_records = [record for record in records if record.get("source") == field_source]
+    result["field_error_rates"] = field_error_rates(
+        field_records, healthy_label=healthy_label, positive_label=positive_label
+    )
+
+    slices = {}
+    for dimension in SLICE_DIMENSIONS:
+        grouped = defaultdict(list)
+        for record in records:
+            value = record["true"] if dimension == "disease" else record.get(dimension, "unknown")
+            grouped[str(value)].append(record)
+        slices[dimension] = {
+            value: _group_summary(group, labels, bins)
+            for value, group in sorted(grouped.items())
+        }
+    result["slices"] = slices
+    return result
+
+
+def evaluate_manifest(payload, bins=10, healthy_label=None, positive_label=None,
+                      field_source="field"):
+    """Strictly validate and evaluate a metadata-complete manifest."""
+    manifest = validate_manifest(payload, require_metadata=True)
+    result = evaluate_records(
+        manifest["records"], manifest["labels"], bins=bins,
+        healthy_label=healthy_label, positive_label=positive_label,
+        field_source=field_source,
+    )
+    result["manifest"] = {
+        "schema_version": manifest["schema_version"],
+        "dataset": manifest.get("dataset", {}),
+        "record_count": len(manifest["records"]),
+        "dimensions": list(REQUIRED_METADATA_FIELDS),
+    }
+    return result
+
+
 def assess_confidence(score, threshold=0.55):
-    """Return an explicit uncertainty marker for user-facing predictions."""
-    if not math.isfinite(float(score)) or not 0.0 <= score <= 1.0:
-        raise ValueError("score must be a finite value between 0 and 1")
+    """Return the original simple confidence marker for compatibility."""
+    score = _finite(score, "score")
+    threshold = _finite(threshold, "threshold")
+    if not 0.0 <= score <= 1.0 or not 0.0 <= threshold <= 1.0:
+        raise ValueError("score and threshold must be between 0 and 1")
     if score < threshold:
         return {"uncertain": True, "band": "uncertain"}
     if score >= 0.75:
         return {"uncertain": False, "band": "high"}
     return {"uncertain": False, "band": "medium"}
+
+
+def assess_probability_vector(probabilities, threshold=0.55, margin_threshold=0.15,
+                              entropy_threshold=0.75, ood_max_probability=0.40):
+    """Derive transparent uncertainty/OOD *screening* evidence.
+
+    This is an abstention heuristic over model scores, not a learned OOD
+    detector.  It is intentionally labelled ``ood_suspected`` so callers do
+    not mistake a softmax score for a calibrated probability.
+    """
+    if isinstance(probabilities, dict):
+        labels = list(probabilities)
+        values = [probabilities[label] for label in labels]
+    else:
+        labels = []
+        values = list(probabilities) if probabilities is not None else []
+    if not values:
+        raise ValueError("probabilities must be non-empty")
+    values = [_finite(value, "probability") for value in values]
+    if any(value < 0.0 for value in values):
+        raise ValueError("probabilities must be non-negative")
+    total = sum(values)
+    if abs(total - 1.0) > 0.001:
+        raise ValueError("probabilities must sum to 1")
+    if labels and len(set(labels)) != len(labels):
+        raise ValueError("probability labels must be unique")
+    if len(values) > 1:
+        entropy = -sum(value * math.log(value) for value in values if value > 0)
+        entropy /= math.log(len(values))
+    else:
+        entropy = 0.0
+    ordered = sorted(enumerate(values), key=lambda item: item[1], reverse=True)
+    top_index, top_probability = ordered[0]
+    second_probability = ordered[1][1] if len(ordered) > 1 else 0.0
+    margin = top_probability - second_probability
+    reasons = []
+    if top_probability < threshold:
+        reasons.append("low_confidence")
+    if margin < margin_threshold and len(values) > 1:
+        reasons.append("low_margin")
+    if entropy >= entropy_threshold and len(values) > 1:
+        reasons.append("high_entropy")
+    ood_suspected = (
+        len(values) > 1
+        and top_probability < ood_max_probability
+        and entropy >= entropy_threshold
+    )
+    if ood_suspected:
+        reasons.append("ood_heuristic")
+    uncertain = bool(reasons)
+    undetermined = (
+        len(values) > 1
+        and top_probability < threshold
+        and entropy >= entropy_threshold
+    )
+    if ood_suspected:
+        band = "ood"
+    elif uncertain:
+        band = "uncertain"
+    elif top_probability >= 0.75 and margin >= 0.40:
+        band = "high"
+    else:
+        band = "medium"
+    return {
+        "uncertain": uncertain,
+        "undetermined": undetermined,
+        "abstain": uncertain,
+        "band": band,
+        "ood_suspected": ood_suspected,
+        "decision_status": (
+            "ood_suspected" if ood_suspected
+            else "undetermined" if undetermined
+            else "uncertain" if uncertain
+            else "known"
+        ),
+        "uncertainty_reason": ",".join(reasons) or "none",
+        "top_probability": top_probability,
+        "second_probability": second_probability,
+        "margin": margin,
+        "normalized_entropy": entropy,
+        "top_label": labels[top_index] if labels else None,
+    }

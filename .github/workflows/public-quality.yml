@@ -24,6 +24,8 @@ jobs:
         run: python -m pip install --disable-pip-version-check -r requirements-mqtt.txt
       - name: Run repository tests
         run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Run strict algorithm evaluation fixture
+        run: python system_a/core/evaluate_predictions.py docs/examples/evaluation_manifest.example.json --strict-metadata --healthy-label 健康
       - name: Parse project Python sources
         run: python -c "import ast,pathlib; fs=[p for r in ('system_a/core','system_b/core','tests','tools') for p in pathlib.Path(r).rglob('*.py') if '.venv' not in p.parts]; [ast.parse(p.read_text(encoding='utf-8'),filename=str(p)) for p in fs]; print(f'AST_OK {len(fs)} files')"
       - name: Scan tracked files for public-release violations

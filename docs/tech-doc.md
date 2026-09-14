@@ -155,7 +155,7 @@ ESP32-CAM -> fetch_image() -> run_detection_once()
                       +---- DualVerifier -----+
                             (dual_verifier.py)
                                   |
-                      滑动窗口平均(5帧) -> 等级防抖(3帧确认)
+                      TemporalFusion(5帧衰减投票 + 3帧候选确认)
                                   |
                       +-----------+-----------+
                  更新全局状态    条件保存     钉钉告警
@@ -208,8 +208,11 @@ System B 以 `app.py` 作为依赖组装入口，业务边界分别位于以下�
 | `workers/camera_tasks.py` | 每摄像头任务队列、锁、周期调度和停止 |
 | `repositories/history_repository.py` | 参数化 SQLite 查询、索引、迁移和聚合 |
 | `schemas/api.py` | JSON 白名单、类型、有限值、范围和关联约束 |
+| `services/temporal_fusion.py` | 每摄像头衰减加权投票、pending/stable 状态和可审计证据 |
 
 System A 使用 `system_a/core/security.py` 实施同一 token 环境变量约定；标准启动脚本为 `deploy/start_system_a.ps1` 和 `deploy/start_system_b.ps1`。
+
+算法评估和现场闭环的严格清单格式、分层指标、校准、OOD/不确定性边界及真实数据验收要求见 [docs/algorithm-evaluation.md](algorithm-evaluation.md)。
 
 历史服务默认数据库是 `system_b/core/detection_logs/history.db`。旧版 `history.json` 只在数据库为空时迁移一次；日常分页、趋势和统计不会把整个 JSON 文件加载进内存。
 
@@ -299,7 +302,7 @@ MQTT 发布器将 Paho `RuntimeError` 与其他发布失败统一纳入有界重
 
 ### 第一阶段：稳定可运行验收
 
-第一阶段统一 System A 使用 `system_a/models/yolov8n.pt`、System B 使用 `system_b/models/best.pt`；模型文件和缓存不随 Git 发布。`requirements-a.txt`、`requirements-b.txt`、`requirements-test.txt`、`requirements-mqtt.txt` 与 `requirements-ui-test.txt` 均采用精确版本锁定，Python 统一要求 3.10+，CI 使用 3.11。启动脚本通过锁定文件安装依赖。
+第一阶段统一 System A 使用 `system_a/models/yolov8n.pt`、System B 使用 `system_b/models/best.pt`；当前分支实际追踪五个小型运行时权重，HuggingFace 缓存不随 Git 发布。发布前应确认权重再分发许可；若迁移到 Git LFS 或独立模型包，需同步更新启动脚本和文档。`requirements-a.txt`、`requirements-b.txt`、`requirements-test.txt`、`requirements-mqtt.txt` 与 `requirements-ui-test.txt` 均采用精确版本锁定，Python 统一要求 3.10+，CI 使用 3.11。启动脚本通过锁定文件安装依赖。
 
 启动 System B 后，可运行 `python tools/api_smoke_phase1.py http://127.0.0.1:5000` 验收存活、就绪、参数元信息和非法参数拒绝；System B 到 System A 的深度诊断代理使用 multipart 字段 `file`，与 System A `/report` 的 `UploadFile(file=...)` 一致。
 
@@ -446,6 +449,7 @@ set HF_ENDPOINT=https://hf-mirror.com
 | 多引擎融合 | System A 五引擎并行 + LLM 汇总；System B 双引擎 DualVerifier 融合 |
 | 边缘 + 云端 | ESP32-CAM 本地采集 → System B 实时分析 → System A 可部署服务器远程诊断 |
 | 模型部署 | ONNX Runtime (GPU 自动检测)、YOLOv8 推理、Chinese-CLIP 零样本、Qwen2-VL 本地 LLM |
-| 实时系统 | 多线程检测 + 滑动窗口平滑 + 等级防抖 + MJPEG 视频流 |
+| 实时系统 | 多线程检测 + 每摄像头 TemporalFusion 时序融合 + MJPEG 视频流 |
+| 算法证据 | 分层混淆矩阵、ECE/Brier、现场 FP/FN、OOD/不确定状态；真实标注集指标待验收 |
 | 工程化 | 配置热更新、SQLite 历史、异步任务、MD5 缓存、钉钉告警、SD 卡同步 |
 | 可扩展 | 多摄像头框架、动态添加/删除、配置驱动、A-B 浅连接 |

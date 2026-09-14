@@ -11,7 +11,7 @@ AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实�
 - 默认 CORS 收敛到本机 A/B 前端来源。
 - 增加接口契约和配置边界回归测试。
 - 锁定生产、测试、MQTT 和浏览器依赖版本；启动脚本统一从 requirements 文件安装。
-- 统一文档中的模型职责：System A 使用 `yolov8n.pt`，System B 使用 `best.pt`；模型权重不进入 Git。
+- 统一文档中的模型职责：System A 使用 `yolov8n.pt`，System B 使用 `best.pt`；当前分支实际追踪五个小型运行时权重，HuggingFace 缓存不进入 Git。后续若改用 Git LFS/独立模型包，需另行完成发布策略验收。
 - 增加 `tools/api_smoke_phase1.py`，运行时验证 System B 存活、就绪、参数元信息和非法参数拒绝，并接入公开 CI。
 - 验收：本机真实 API 冒烟通过，完整测试、源码解析、隐私扫描和公开 CI 通过。
 
@@ -26,26 +26,17 @@ AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实�
 - System A/B 共享 Bearer/X-API-Key 认证和按来源地址的有界限流；System B→A 代理自动传递服务端 token。Webhook URL 使用主机允许列表和 HTTPS 约束，签名密钥仅从环境变量读取，配置接口只返回脱敏信息。
 - 验收：阶段一/二契约测试、完整 unittest、compileall、真实 Flask 路由检查和隐私扫描通过；Docker 镜像构建与真实设备联调仍需在目标部署环境验证。
 
-## 阶段 3：算法评估与现场闭环（评估基础已完成）
+## 阶段 3：算法评估与现场闭环（工程基线已完成，真实数据待验收）
 
-- 已新增 `system_a/core/evaluation.py`，支持 Accuracy、每类 Precision/Recall/F1、宏平均、混淆矩阵和 ECE。
-- 已新增 `system_a/core/evaluate_predictions.py`，可对固定 JSON 预测清单运行评估，不加载模型、不上传数据。
-- System A 分类和 CLIP 输出增加 `uncertain`/`confidence_band`；低置信度结果会在 LLM 报告中标注为需要人工复核。
-- 尚未报告真实模型指标：仓库当前没有可公开验证的标注集；后续必须按作物、病害、光照和设备来源建立固定验证集。
-- 后续将 HSV 定位为快速筛查层，YOLO/分割定位为视觉证据层，LLM 仅负责解释与建议。
+- `system_a/core/evaluation.py` 已支持 Accuracy、每类和宏/加权 Precision/Recall/F1、固定标签顺序混淆矩阵、ECE、可靠性分箱和 Brier score。
+- 严格评估清单要求每条样本记录作物、光照、设备、来源和 split；`group_id` 不得跨 split，避免同一采集序列泄漏。
+- 评估结果按 crop、disease、lighting、device、source、split 分层；`source=field` 可输出现场二值误报率和漏报率。
+- System A 分类和 CLIP 输出 `decision_status`（known/uncertain/undetermined/ood_suspected）、`abstain`、`uncertainty_reason` 和 `confidence_semantics`；这是透明的拒识启发式，不是已验证的 OOD 模型。
+- System B 已将每摄像头的滑动平均/等级防抖替换为 `TemporalFusion`：衰减加权投票、候选支持度、pending 计数和最近帧证据均可从接口读取。
+- HSV 仅作为快速筛查层，YOLO/分割作为视觉证据层，LLM 仅解释已有证据和生成建议，不参与真值判定。
+- 仓库当前没有可公开验证的真实标注集，因此不发布模型 Accuracy、现场误报率或漏报率；后续必须按采集序列建立固定验证集并补齐真实指标。
 
-评估清单格式示例：
-
-```json
-{
-  "labels": ["健康", "番茄早疫病"],
-  "records": [
-    {"true": "健康", "pred": "健康", "confidence": 0.92}
-  ]
-}
-```
-
-运行：`python system_a/core/evaluate_predictions.py path/to/predictions.json`。
+格式和运行示例见 [`docs/algorithm-evaluation.md`](algorithm-evaluation.md) 与 [`docs/examples/evaluation_manifest.example.json`](examples/evaluation_manifest.example.json)。
 
 ## 阶段 4：边缘部署与可扩展集成（离线队列基础已完成）
 

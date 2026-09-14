@@ -20,6 +20,8 @@
 
 System B 是 AgriVision 的**实时病虫害监控子系统**，基于 Flask 构建，提供从图像采集、双引擎检测、告警通知到数据归档的完整闭环。
 
+算法评估清单、现场 FP/FN 定义和跨光照/设备验证方法见[算法评估与现场闭环](algorithm-evaluation.md)。
+
 ### 核心能力
 
 | 能力 | 说明 |
@@ -49,7 +51,7 @@ system_b/
 ├── core/
 │   ├── app.py                  # Flask 组装入口与设备/页面适配层
 │   ├── routes/                 # monitoring、history、storage、engineering
-│   ├── services/               # API 认证/限流、Prometheus 指标
+│   ├── services/               # API 认证/限流、Prometheus 指标、时序融合
 │   ├── workers/                # 每摄像头有界任务队列和可停止 worker
 │   ├── repositories/           # 参数化 SQLite 历史访问
 │   ├── schemas/                # 请求白名单、类型、范围校验
@@ -183,23 +185,17 @@ AND 策略的意义：单独用绿色优势通道会将黄色区域误判为叶�
 
 ### 2.4 检测稳定性
 
-#### 滑动窗口平均
+#### `TemporalFusion` 时序融合
 
-维护最近 5 帧 (`DETECTION_HISTORY_SIZE`) 的检测数值滑动平均，平滑单帧噪声：
+系统不再把“滑动平均”和“等级防抖”当成两个无法解释的黑盒步骤，而是由每个摄像头独立的 `services/temporal_fusion.py` 完成：
 
-```
-avg_disease_count = mean(最近5帧的 disease_count)
-avg_pest_count    = mean(最近5帧的 pest_count)
-```
+1. 最近 5 帧按 `0.8^(距当前帧)` 衰减加权，较新的帧权重更高。
+2. 等级使用加权投票选择 `candidate_level`，同时输出 `weighted_support`。
+3. 候选等级先进入 pending，连续 3 次成为候选后才切换 `stable_level`。
+4. 病斑数量、虫害数量和面积比使用同一组权重求平均。
+5. `/api/status` 和 `/api/dual_status` 的 `temporal` 字段保留最近帧、投票、支持度和待切换计数，便于现场回放。
 
-#### 等级防抖
-
-连续 3 帧 (`LEVEL_CHANGE_THRESHOLD`) 判定为同一等级后才切换，避免等级频繁跳变：
-
-```
-if 连续N帧等级 == X:
-    切换当前稳定等级为 X
-```
+因此单帧“严重”不会直接覆盖连续正常帧；连续异常也不会因为一帧短暂恢复而立即降级。该方法是可解释的工程平滑器，不等同于训练好的时序模型。
 
 ---
 
@@ -241,8 +237,9 @@ cameras[cid]["state"] = {
     "latest_original_image": ndarray, # 最新原始帧 (OpenCV BGR, 用于参数预览)
     "latest_result": dict,           # 最新检测结果 (等级/数量/比例)
     "latest_dual_result": dict,      # 双引擎融合结果
-    "detection_history": list,       # 滑动窗口 (最近5帧数值)
-    "current_stable_level": int,     # 当前防抖等级
+    "detection_history": list,       # 时序窗口 (最近5帧数值)
+    "temporal_fusion": TemporalFusion, # 当前摄像头独立时序融合器
+    "current_stable_level": int,     # 当前稳定等级
     "comparison_history": list,      # 双引擎对比历史 (最近100帧)
     "last_error": str,               # 最近错误信息
     "frame_lock": Lock,              # 线程安全锁
@@ -260,8 +257,7 @@ run_detection_once(camera_id):
   3. 颜色引擎检测 (detect_and_annotate)
   4. YOLO 引擎检测 (yolo_detector.detect)
   5. DualVerifier 融合
-  6. 滑动窗口平均
-  7. 等级防抖
+  6. TemporalFusion 衰减加权投票与 pending 确认
   8. 更新状态字典
   9. 条件保存 (level_code >= 1 时写入历史记录)
   10. 条件告警 (level_code >= 2 时触发钉钉通知)
@@ -897,8 +893,9 @@ if __name__ == '__main__':
 
 | 常量 | 值 | 说明 |
 |------|-----|------|
-| `DETECTION_HISTORY_SIZE` | 5 | 滑动窗口帧数 |
-| `LEVEL_CHANGE_THRESHOLD` | 3 | 等级防抖连续帧数 |
+| `DETECTION_HISTORY_SIZE` | 5 | `TemporalFusion` 时序窗口帧数 |
+| `LEVEL_CHANGE_THRESHOLD` | 3 | 候选等级连续确认帧数 |
+| `TemporalFusion.decay` | 0.8 | 越新的帧权重越高 |
 | `COMPARISON_HISTORY_SIZE` | 100 | 双引擎对比历史帧数 |
 | `SD_SYNC_INTERVAL` | 300 | SD 自动同步间隔 (秒) |
 | `SAVE_INTERVAL` | 60 | 检测间隔内的保存节流 (秒) |
