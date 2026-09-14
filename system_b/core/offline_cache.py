@@ -27,10 +27,13 @@ class OfflineEventCache:
     def put(self, event):
         event_id = event.get("event_id") if isinstance(event, dict) else None
         target = self._path(event_id)
+        serialized = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+        if len(serialized.encode("utf-8")) > self.max_bytes:
+            raise ValueError("event exceeds offline cache byte limit")
         fd, temp_name = tempfile.mkstemp(prefix="event.", suffix=".tmp", dir=self.directory)
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(event, handle, ensure_ascii=False, separators=(",", ":"))
+                handle.write(serialized)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp_name, target)

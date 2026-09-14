@@ -256,6 +256,8 @@ MQTT 发布器将 Paho `RuntimeError` 与其他发布失败统一纳入有界重
 
 阶段 40 将手动同步请求校验前置到 MQTT 连接之前。JSON 必须是对象，`limit` 必须为 1–100 的整数；非法请求直接返回 400，不会建立 broker 连接或触发连接重试。HTTP 与 MQTT 手动入口均不再将非法 JSON/空请求体静默视为空对象。
 
+阶段 41 为 `OfflineEventCache.put()` 增加单条事件字节上限预检：事件先以紧凑 UTF-8 JSON 序列化，再与 `max_bytes` 比较，超限即抛出固定 `ValueError`。检查发生在临时文件创建前，因此不会覆盖旧事件，也不会依赖后置 trim 来处理单条超限数据。
+
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
 ### 3.6 启动方式
