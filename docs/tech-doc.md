@@ -220,7 +220,7 @@ System B 以 `app.py` 作为依赖组装入口，业务边界分别位于以下�
 
 System A 使用 `system_a/core/security.py` 实施同一 token 环境变量约定；标准启动脚本为 `deploy/start_system_a.ps1` 和 `deploy/start_system_b.ps1`。
 
-算法评估和现场闭环的严格清单格式、分层指标、校准、OOD/不确定性边界及真实数据验收要求见 [docs/algorithm-evaluation.md](algorithm-evaluation.md)。
+算法评估和现场闭环的严格清单格式、分层指标、校准、OOD/不确定性边界及真实数据验收要求见 [docs/algorithm-evaluation.md](algorithm-evaluation.md)。拿到真实数据后，先用 `tools/audit_evaluation_dataset.py --check-files` 校验图片路径和 SHA-256，再使用评估 CLI 的 `--strict-provenance` 生成报告；当前仓库的示例仍是占位数据。
 
 System B 路由 Blueprint、参数边界、任务生命周期和远程媒体认证的收口说明见 [docs/architecture-hardening.md](architecture-hardening.md)。
 
@@ -462,6 +462,6 @@ set HF_ENDPOINT=https://hf-mirror.com
 | 边缘 + 云端 | ESP32-CAM 本地采集 → System B 实时分析 → System A 可部署服务器远程诊断 |
 | 模型部署 | ONNX Runtime (GPU 自动检测)、YOLOv8 推理、Chinese-CLIP 零样本、Qwen2-VL 本地 LLM |
 | 实时系统 | 多线程检测 + 每摄像头 TemporalFusion 时序融合 + MJPEG 视频流 |
-| 算法证据 | 分层混淆矩阵、ECE/Brier、现场 FP/FN、OOD/不确定状态；真实标注集指标待验收 |
+| 算法证据 | 分层混淆矩阵、ECE/Brier、现场 FP/FN、OOD/不确定状态、数据与模型 provenance 审计；真实标注集指标待验收 |
 | 工程化 | 配置热更新、SQLite 历史、异步任务、MD5 缓存、钉钉告警、SD 卡同步 |
 | 可扩展 | 多摄像头框架、动态添加/删除、配置驱动、A-B 浅连接 |

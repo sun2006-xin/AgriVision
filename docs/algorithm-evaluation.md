@@ -16,12 +16,15 @@
 | `labels` | 非空且唯一 | 固定类别顺序，决定混淆矩阵行列 |
 | `records` | 非空数组 | 每张图或一个独立样本一条记录 |
 | `dataset` | 对象 | 数据集名称、版本和标注策略 |
+| `model` | 严格证据模式必需 | 模型名称、版本和权重 SHA-256 |
 
 每条记录必须包含：
 
 ```json
 {
   "id": "sample-001",
+  "image": "images/sample-001.jpg",
+  "image_sha256": "...64 位小写十六进制...",
   "true": "健康",
   "pred": "健康",
   "confidence": 0.91,
@@ -31,7 +34,9 @@
   "device": "esp32-cam-v1",
   "source": "field",
   "split": "test",
-  "group_id": "capture-001"
+  "group_id": "capture-001",
+  "annotation_status": "verified",
+  "annotation_source": "two-reviewer-adjudication"
 }
 ```
 
@@ -39,14 +44,35 @@
 
 `crop`、`lighting`、`device`、`source` 和 `split` 是强制元数据。`disease` 切片直接使用 `true` 标签。相同 `group_id` 不允许跨越 train、validation、test，避免同一采集序列泄漏到多个切分。
 
+### 可复现证据模式
+
+只使用 `--strict-metadata` 时，清单仍兼容早期格式；要把结果作为可复核评估的候选报告，使用 `--strict-provenance`。该模式额外要求：
+
+- `dataset.name`、`dataset.version`、`dataset.label_policy`，以及顶层 `model.name`、`model.version`、`model.weights_sha256`。
+- 每条记录的安全相对路径 `image`、小写 `image_sha256`、`group_id`、`annotation_status` 和 `annotation_source`。
+- `split` 只能是 `train`、`validation` 或 `test`；同一内容哈希只能出现一次，同一采集组不能跨切分。
+- `annotation_status` 只能是 `verified` 或 `adjudicated`。无法判断/争议样本不能混入主分类指标清单，应另行进入 abstain/OOD 分析。
+
+结构门禁不读取图片；它只证明清单字段完整。要证明图片确实存在且没有被替换，另行执行文件审计：
+
+```bash
+python tools/audit_evaluation_dataset.py path/to/manifest.json \
+  --image-root path/to/dataset --check-files \
+  --output evaluation-audit.json
+```
+
+审计器会输出按作物、病害、光照、设备、来源和切分的样本覆盖，以及缺失文件、非普通文件和 SHA-256 不匹配列表。结构错误退出码为 `2`，文件审计失败为 `1`，全部通过为 `0`。
+
 ## 运行评估
 
 ```bash
 python system_a/core/evaluate_predictions.py \
   docs/examples/evaluation_manifest.example.json \
-  --strict-metadata \
+  --strict-provenance \
   --healthy-label 健康
 ```
+
+拿到真实图片后，在上面的命令中追加 `--check-files --image-root path/to/dataset`，评估会在计算指标前阻止缺图或错哈希输入。
 
 输出包括：
 
@@ -90,7 +116,7 @@ System B 为每个摄像头维护独立的 `TemporalFusion`：
 
 ## 建集和发布清单
 
-1. 按作物、病害、光照、设备来源建立固定 test 集，按采集序列而不是随机图片拆分。
+1. 按作物、病害、光照、设备来源建立固定 test 集，按采集序列而不是随机图片拆分；为每个样本记录相对路径和 SHA-256，并先运行数据审计。
 2. 记录真实标签来源、标注人员、争议样本和无法判断样本；无法判断样本应进入 abstain/OOD 分析，不要强行归类。
 3. 固定模型版本、阈值、类别顺序和推理时间，保留原始预测清单及评估输出。
-4. 首先发布基线和切片分布，再设置业务门槛；在真实数据缺失时不填写“现场误报率已达标”。
+4. 首先发布基线和切片分布，再设置业务门槛；在真实数据缺失时不填写“现场误报率已达标”。示例清单中的路径、哈希和模型版本是占位值，不代表真实数据或模型性能。

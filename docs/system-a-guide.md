@@ -519,7 +519,7 @@ file: (二进制图片文件)
 
 分类和 CLIP 响应包含 `uncertain`、`undetermined`、`abstain`、`confidence_band`、`decision_status`、`ood_suspected`、`uncertainty_reason` 和 `confidence_semantics` 字段。默认情况下分数低于 `0.55` 会标记为不确定，可通过环境变量 `AGRIVISION_UNCERTAINTY_THRESHOLD` 调整；同时会检查 top-1 margin 和归一化熵。`undetermined` 表示模型没有足够类别优势，`ood_suspected` 是基于分数/熵的拒识启发式；两者都不是经过独立数据集验证的 OOD 检测器。
 
-所有 System A 模型分数目前均为未经校准的辅助分数，不能直接解释为诊断概率。评估清单、ECE、可靠性分箱、Brier score、按光照/设备/作物切片和现场 FP/FN 统计见 [算法评估与现场闭环](algorithm-evaluation.md)。Qwen2-VL 只负责解释已有分类、检测、分割和 CLIP 证据并生成建议，不得作为诊断真值。
+所有 System A 模型分数目前均为未经校准的辅助分数，不能直接解释为诊断概率。评估清单、`--strict-provenance`、图片 SHA-256 审计、ECE、可靠性分箱、Brier score、按光照/设备/作物切片和现场 FP/FN 统计见 [算法评估与现场闭环](algorithm-evaluation.md)。Qwen2-VL 只负责解释已有分类、检测、分割和 CLIP 证据并生成建议，不得作为诊断真值。
 
 ### 3.7 `POST /diagnose` -- 综合诊断（同步）
 

@@ -5,10 +5,17 @@
     "version": "2026-09-14",
     "label_policy": "one image, one primary diagnosis"
   },
+  "model": {
+    "name": "system-a-classifier",
+    "version": "replace-with-model-version",
+    "weights_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+  },
   "labels": ["健康", "番茄早疫病"],
   "records": [
     {
       "id": "sample-001",
+      "image": "images/sample-001.jpg",
+      "image_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "true": "健康",
       "pred": "健康",
       "confidence": 0.91,
@@ -18,10 +25,14 @@
       "device": "esp32-cam-v1",
       "source": "field",
       "split": "test",
-      "group_id": "capture-001"
+      "group_id": "capture-001",
+      "annotation_status": "verified",
+      "annotation_source": "replace-with-review-record"
     },
     {
       "id": "sample-002",
+      "image": "images/sample-002.jpg",
+      "image_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
       "true": "番茄早疫病",
       "pred": "番茄早疫病",
       "confidence": 0.84,
@@ -31,7 +42,9 @@
       "device": "esp32-cam-v1",
       "source": "field",
       "split": "test",
-      "group_id": "capture-002"
+      "group_id": "capture-002",
+      "annotation_status": "verified",
+      "annotation_source": "replace-with-review-record"
     }
   ]
 }

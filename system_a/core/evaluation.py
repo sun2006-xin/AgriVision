@@ -7,6 +7,7 @@ predictions and capture metadata rather than from an opaque runtime state.
 
 from collections import defaultdict
 import math
+import re
 
 
 MANIFEST_SCHEMA_VERSION = 1
@@ -15,8 +16,15 @@ SLICE_DIMENSIONS = ("crop", "disease", "lighting", "device", "source", "split")
 _RECORD_FIELDS = {
     "id", "true", "pred", "confidence", "probabilities",
     "crop", "lighting", "device", "source", "split", "group_id",
-    "field_true", "field_pred", "model", "notes",
+    "field_true", "field_pred", "model", "notes", "image", "image_sha256",
+    "annotation_status", "annotation_source",
 }
+_MODEL_FIELDS = {"name", "version", "weights_sha256", "code_revision"}
+_REQUIRED_MODEL_FIELDS = ("name", "version", "weights_sha256")
+_REQUIRED_DATASET_FIELDS = ("name", "version", "label_policy")
+_ALLOWED_SPLITS = {"train", "validation", "test"}
+_ALLOWED_ANNOTATION_STATUSES = {"verified", "adjudicated"}
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _safe_ratio(numerator, denominator):
@@ -201,7 +209,96 @@ def calibration_metrics(records, labels, bins=10):
     }
 
 
-def _validate_record(record, labels=None, require_metadata=False, require_id=False):
+def _validate_text(value, name, max_length):
+    if not isinstance(value, str) or not value.strip() or len(value) > max_length or "\x00" in value:
+        raise ValueError(f"{name} must be a non-empty string of at most {max_length} characters")
+
+
+def _validate_sha256(value, name):
+    if not isinstance(value, str) or not _SHA256_PATTERN.fullmatch(value):
+        raise ValueError(f"{name} must be a lowercase SHA-256 hex digest")
+
+
+def _validate_image_path(value):
+    _validate_text(value, "image", 512)
+    if (
+        value.startswith(("/", "\\"))
+        or re.match(r"^[A-Za-z]:", value)
+        or "://" in value
+        or "\\" in value
+        or ":" in value
+    ):
+        raise ValueError("image must be a portable relative path")
+    parts = value.split("/")
+    if not parts or any(not part or part in {".", ".."} for part in parts):
+        raise ValueError("image must not contain empty, dot or parent path components")
+
+
+def _validate_dataset_metadata(dataset, require_provenance=False):
+    if dataset is None:
+        if require_provenance:
+            raise ValueError("manifest dataset metadata is required for strict provenance")
+        return
+    if not isinstance(dataset, dict):
+        raise ValueError("dataset must be a JSON object")
+    if require_provenance:
+        missing = sorted(field for field in _REQUIRED_DATASET_FIELDS if field not in dataset)
+        if missing:
+            raise ValueError("dataset is missing required field: " + missing[0])
+    for field in _REQUIRED_DATASET_FIELDS:
+        if field in dataset:
+            _validate_text(dataset[field], f"dataset.{field}", 512)
+
+
+def _validate_model_metadata(model, require_provenance=False):
+    if model is None:
+        if require_provenance:
+            raise ValueError("manifest model metadata is required for strict provenance")
+        return
+    if not isinstance(model, dict):
+        raise ValueError("model must be a JSON object")
+    unknown = sorted(set(model) - _MODEL_FIELDS)
+    if unknown:
+        raise ValueError("unknown model field: " + unknown[0])
+    if require_provenance:
+        missing = sorted(field for field in _REQUIRED_MODEL_FIELDS if field not in model)
+        if missing:
+            raise ValueError("model is missing required field: " + missing[0])
+    for field in ("name", "version", "code_revision"):
+        if field in model:
+            _validate_text(model[field], f"model.{field}", 256)
+    if "weights_sha256" in model:
+        _validate_sha256(model["weights_sha256"], "model.weights_sha256")
+
+
+def _validate_provenance_fields(record, require_provenance=False):
+    has_image = "image" in record
+    has_digest = "image_sha256" in record
+    if has_image != has_digest:
+        raise ValueError("image and image_sha256 must be provided together")
+    if has_image:
+        _validate_image_path(record["image"])
+        _validate_sha256(record["image_sha256"], "image_sha256")
+
+    if "annotation_status" in record:
+        if record["annotation_status"] not in _ALLOWED_ANNOTATION_STATUSES:
+            raise ValueError("annotation_status must be verified or adjudicated")
+    if "annotation_source" in record:
+        _validate_text(record["annotation_source"], "annotation_source", 256)
+
+    if require_provenance:
+        required = {"image", "image_sha256", "group_id", "annotation_status", "annotation_source"}
+        missing = sorted(field for field in required if field not in record)
+        if missing:
+            raise ValueError("record is missing provenance field: " + missing[0])
+        if record["annotation_status"] not in _ALLOWED_ANNOTATION_STATUSES:
+            raise ValueError("annotation_status must be verified or adjudicated")
+        if record["split"] not in _ALLOWED_SPLITS:
+            raise ValueError("split must be one of train, validation or test")
+
+
+def _validate_record(record, labels=None, require_metadata=False, require_id=False,
+                     require_provenance=False):
     if not isinstance(record, dict):
         raise ValueError("each record must be a JSON object")
     unknown = sorted(set(record) - _RECORD_FIELDS)
@@ -255,9 +352,10 @@ def _validate_record(record, labels=None, require_metadata=False, require_id=Fal
             probability_sum += value
         if abs(probability_sum - 1.0) > 0.001:
             raise ValueError("probabilities must sum to 1")
+    _validate_provenance_fields(record, require_provenance=require_provenance)
 
 
-def validate_manifest(payload, require_metadata=True):
+def validate_manifest(payload, require_metadata=True, require_provenance=False):
     """Validate and return a JSON-safe evaluation manifest copy.
 
     Strict manifests require crop, lighting, device, source and split for
@@ -275,18 +373,29 @@ def validate_manifest(payload, require_metadata=True):
     records = payload.get("records")
     if not isinstance(records, list) or not records:
         raise ValueError("manifest records must be a non-empty list")
-    if "dataset" in payload and not isinstance(payload["dataset"], dict):
+    if "dataset" in payload and payload["dataset"] is None:
         raise ValueError("dataset must be a JSON object")
+    if "model" in payload and payload["model"] is None:
+        raise ValueError("model must be a JSON object")
+    _validate_dataset_metadata(payload.get("dataset"), require_provenance=require_provenance)
+    _validate_model_metadata(payload.get("model"), require_provenance=require_provenance)
 
-    allowed_manifest_fields = {"schema_version", "dataset", "labels", "records"}
+    allowed_manifest_fields = {"schema_version", "dataset", "model", "labels", "records"}
     unknown = sorted(set(payload) - allowed_manifest_fields)
     if unknown:
         raise ValueError("unknown manifest field: " + unknown[0])
 
     seen_ids = set()
+    seen_image_hashes = set()
     groups = defaultdict(set)
     for record in records:
-        _validate_record(record, labels, require_metadata=require_metadata, require_id=True)
+        _validate_record(
+            record,
+            labels,
+            require_metadata=require_metadata,
+            require_id=True,
+            require_provenance=require_provenance,
+        )
         if record["true"] not in labels or record["pred"] not in labels:
             raise ValueError("record labels must be declared in manifest labels")
         if record["id"] in seen_ids:
@@ -294,18 +403,26 @@ def validate_manifest(payload, require_metadata=True):
         seen_ids.add(record["id"])
         if "probabilities" in record and set(record["probabilities"]) != set(labels):
             raise ValueError("strict manifest probabilities must include every declared label")
+        if require_provenance:
+            image_hash = record["image_sha256"]
+            if image_hash in seen_image_hashes:
+                raise ValueError("image_sha256 must be unique across evaluation records")
+            seen_image_hashes.add(image_hash)
         if record.get("group_id"):
             groups[record["group_id"]].add(record["split"])
     if any(len(splits) > 1 for splits in groups.values()):
         raise ValueError("group_id must not span multiple dataset splits")
 
     import json
-    return json.loads(json.dumps({
+    normalized = {
         "schema_version": MANIFEST_SCHEMA_VERSION,
         "dataset": payload.get("dataset", {}),
         "labels": labels,
         "records": records,
-    }, ensure_ascii=False))
+    }
+    if "model" in payload:
+        normalized["model"] = payload["model"]
+    return json.loads(json.dumps(normalized, ensure_ascii=False))
 
 
 def _resolve_healthy_label(labels, healthy_label):
@@ -430,9 +547,13 @@ def evaluate_records(records, labels, bins=10, healthy_label=None, positive_labe
 
 
 def evaluate_manifest(payload, bins=10, healthy_label=None, positive_label=None,
-                      field_source="field"):
+                      field_source="field", require_provenance=False):
     """Strictly validate and evaluate a metadata-complete manifest."""
-    manifest = validate_manifest(payload, require_metadata=True)
+    manifest = validate_manifest(
+        payload,
+        require_metadata=True,
+        require_provenance=require_provenance,
+    )
     result = evaluate_records(
         manifest["records"], manifest["labels"], bins=bins,
         healthy_label=healthy_label, positive_label=positive_label,
@@ -443,7 +564,14 @@ def evaluate_manifest(payload, bins=10, healthy_label=None, positive_label=None,
         "dataset": manifest.get("dataset", {}),
         "record_count": len(manifest["records"]),
         "dimensions": list(REQUIRED_METADATA_FIELDS),
+        "provenance": {
+            "required": require_provenance,
+            "file_identity": require_provenance,
+            "annotation_statuses": sorted(_ALLOWED_ANNOTATION_STATUSES),
+        },
     }
+    if "model" in manifest:
+        result["manifest"]["model"] = manifest["model"]
     return result
 
 

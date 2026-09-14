@@ -227,11 +227,11 @@ AgriVision/
 
 ### 阶段 3 算法评估与现场闭环
 
-- `system_a/core/evaluate_predictions.py` 支持严格 JSON 清单：按作物、病害、光照、设备、来源和切分输出分类指标与混淆矩阵。
+- `system_a/core/evaluate_predictions.py` 支持严格 JSON 清单：按作物、病害、光照、设备、来源和切分输出分类指标与混淆矩阵；`--strict-provenance` 进一步要求数据集/模型身份、样本 SHA-256、采集组和已复核标注。
 - 输出 ECE、可靠性分箱和 Brier score；没有完整概率向量时会明确标记为 `top1`，不会把未校准分数包装成概率。
 - 对 `source=field` 的记录输出现场二值误报/漏报统计；缺少现场样本或二值定义时返回 `available=false`，不填伪造的零。
 - System A 返回 `known`、`uncertain`、`undetermined`、`ood_suspected`、`abstain` 及原因；System B 使用每摄像头独立的衰减加权多帧融合，并保留可审计证据。
-- 示例清单和运行方法见 [算法评估与现场闭环](docs/algorithm-evaluation.md)。当前仓库没有公开真实标注集，示例结果不代表模型性能。
+- 示例清单、严格证据模式和文件哈希审计见 [算法评估与现场闭环](docs/algorithm-evaluation.md)。当前仓库没有公开真实标注集，示例结果不代表模型性能。
 
 ### 阶段 2 工程化落地
 
