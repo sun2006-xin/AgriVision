@@ -254,6 +254,8 @@ MQTT 发布器将 Paho `RuntimeError` 与其他发布失败统一纳入有界重
 
 阶段 39 修正手动 MQTT 同步的空队列语义：没有待发送事件时记录 `empty`，返回 `attempts=0`，不调用发布器，也不增加成功批次数。这样面板统计与实际网络行为一致。
 
+阶段 40 将手动同步请求校验前置到 MQTT 连接之前。JSON 必须是对象，`limit` 必须为 1–100 的整数；非法请求直接返回 400，不会建立 broker 连接或触发连接重试。HTTP 与 MQTT 手动入口均不再将非法 JSON/空请求体静默视为空对象。
+
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
 ### 3.6 启动方式

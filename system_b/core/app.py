@@ -2589,7 +2589,7 @@ def api_offline_events_sync():
         return jsonify({"success": False, "error": "event sync is already running"}), 409
 
     try:
-        params = request.get_json(silent=True) or {}
+        params = request.get_json(silent=True)
         if not isinstance(params, dict):
             return jsonify({"success": False, "error": "request body must be a JSON object"}), 400
         limit = params.get("limit", 50)
@@ -2615,18 +2615,18 @@ def api_offline_events_sync_mqtt():
         return jsonify({"success": False, "error": "event sync is already running"}), 409
 
     try:
-        try:
-            transport = get_mqtt_transport()
-        except Exception:
-            event_sync_status.record_mqtt_runtime("connection_failed", "runtime")
-            return jsonify({"success": False, "error": "mqtt runtime is not configured"}), 503
-
-        params = request.get_json(silent=True) or {}
+        params = request.get_json(silent=True)
         if not isinstance(params, dict):
             return jsonify({"success": False, "error": "request body must be a JSON object"}), 400
         limit = params.get("limit", 50)
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
             return jsonify({"success": False, "error": "limit must be an integer from 1 to 100"}), 400
+
+        try:
+            transport = get_mqtt_transport()
+        except Exception:
+            event_sync_status.record_mqtt_runtime("connection_failed", "runtime")
+            return jsonify({"success": False, "error": "mqtt runtime is not configured"}), 503
 
         events = offline_event_cache.list_pending()[:limit]
         if not events:

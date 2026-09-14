@@ -225,6 +225,8 @@ AgriVision/
 
 阶段 39 已修正 MQTT 手动同步的空队列统计：没有待发送事件时不会虚增成功批次，也不会进行无意义的发布尝试。
 
+阶段 40 已将同步请求校验前置到 MQTT 连接之前，非法 JSON 或 `limit` 不会触发网络连接、重试或凭据使用。
+
 公开发布门禁已在 GitHub Actions 对提交 `1c68338` 验证通过：[查看 CI 运行记录](https://github.com/sun2006-xin/AgriVision/actions/runs/34762246684)。
 
 MQTT 契约测试也已在 GitHub Actions 对提交 `de89384` 验证通过：[查看 MQTT CI 运行记录](https://github.com/sun2006-xin/AgriVision/actions/runs/34762437681)。这不代表真实 broker 或 ESP32 已完成联调。
