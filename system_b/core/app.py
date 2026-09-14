@@ -2626,8 +2626,25 @@ def api_offline_events_sync_mqtt():
         try:
             transport = get_mqtt_transport()
         except Exception:
-            event_sync_status.record_mqtt_runtime("connection_failed", "runtime")
-            return jsonify({"success": False, "error": "mqtt runtime is not configured"}), 503
+            mqtt_config = build_mqtt_config_status(
+                MQTT_BROKER_URL,
+                MQTT_TOPIC,
+                MQTT_CLIENT_ID,
+                MQTT_USERNAME,
+                MQTT_PASSWORD,
+                MQTT_CA_CERTS,
+            )
+            if mqtt_config["configured"]:
+                event_sync_status.record_mqtt_runtime("connection_failed", "runtime")
+                error_code = "mqtt_connection_failed"
+            else:
+                event_sync_status.record_mqtt_runtime("not_configured")
+                error_code = "mqtt_not_configured"
+            return jsonify({
+                "success": False,
+                "error": "mqtt sync unavailable",
+                "error_code": error_code,
+            }), 503
 
         events = offline_event_cache.list_pending()[:limit]
         if not events:

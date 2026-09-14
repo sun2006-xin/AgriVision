@@ -233,6 +233,8 @@ AgriVision/
 
 阶段 43 已增加离线缓存记录读取保护，坏记录不会进入同步器或阻塞有效事件，也不会被自动删除以便后续取证。
 
+阶段 44 已为 MQTT 手动同步增加脱敏错误码，可区分配置缺口与连接故障，同时不暴露异常原文或任何凭据。
+
 公开发布门禁已在 GitHub Actions 对提交 `1c68338` 验证通过：[查看 CI 运行记录](https://github.com/sun2006-xin/AgriVision/actions/runs/34762246684)。
 
 MQTT 契约测试也已在 GitHub Actions 对提交 `de89384` 验证通过：[查看 MQTT CI 运行记录](https://github.com/sun2006-xin/AgriVision/actions/runs/34762437681)。这不代表真实 broker 或 ESP32 已完成联调。
