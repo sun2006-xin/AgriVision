@@ -264,6 +264,8 @@ MQTT 发布器将 Paho `RuntimeError` 与其他发布失败统一纳入有界重
 
 阶段 44 为 `/api/offline_events/sync_mqtt` 增加固定错误码。配置预检失败返回 `mqtt_not_configured`，配置完整但创建运行时失败返回 `mqtt_connection_failed`；两种响应共用脱敏提示 `mqtt sync unavailable`，不暴露异常文本或任何运行时配置值。
 
+阶段 45 为 `OfflineEventCache` 增加 `_event_paths_by_mtime()`，读取和 trim 均只处理普通 JSON 文件，并对 `stat()` 期间的文件系统竞态进行容错。这样临时文件、目录或并发删除不会破坏有效事件的读取、同步和容量清理。
+
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
 ### 3.6 启动方式

@@ -24,6 +24,16 @@ class OfflineEventCache:
             raise ValueError("event_id contains unsupported characters")
         return self.directory / f"{event_id}.json"
 
+    def _event_paths_by_mtime(self):
+        paths = []
+        for path in self.directory.glob("*.json"):
+            try:
+                if path.is_file():
+                    paths.append((path.stat().st_mtime_ns, path.name, path))
+            except OSError:
+                continue
+        return [path for _mtime, _name, path in sorted(paths)]
+
     def put(self, event):
         event_id = event.get("event_id") if isinstance(event, dict) else None
         target = self._path(event_id)
@@ -44,7 +54,7 @@ class OfflineEventCache:
 
     def list_pending(self):
         pending = []
-        for path in sorted(self.directory.glob("*.json"), key=lambda item: (item.stat().st_mtime_ns, item.name)):
+        for path in self._event_paths_by_mtime():
             try:
                 event = json.loads(path.read_text(encoding="utf-8"))
                 if not isinstance(event, dict):
@@ -65,11 +75,19 @@ class OfflineEventCache:
             pass
 
     def _trim(self):
-        paths = sorted(self.directory.glob("*.json"), key=lambda item: (item.stat().st_mtime_ns, item.name))
-        total_bytes = sum(path.stat().st_size for path in paths)
+        paths = self._event_paths_by_mtime()
+        sizes = {}
+        total_bytes = 0
+        for path in paths:
+            try:
+                size = path.stat().st_size
+            except OSError:
+                size = 0
+            sizes[path] = size
+            total_bytes += size
         while paths and (len(paths) > self.max_items or total_bytes > self.max_bytes):
             oldest = paths.pop(0)
-            total_bytes -= oldest.stat().st_size
+            total_bytes -= sizes.pop(oldest, 0)
             try:
                 oldest.unlink()
             except FileNotFoundError:
