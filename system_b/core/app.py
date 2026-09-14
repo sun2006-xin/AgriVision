@@ -138,6 +138,7 @@ from event_schema import build_detection_event
 from offline_cache import OfflineEventCache
 from event_transport import EventTransport, send_events_http
 from mqtt_runtime import create_paho_transport
+from mqtt_config_status import build_mqtt_config_status
 from event_scheduler import EventSyncScheduler
 from event_sync_status import EventSyncStatus
 from process_sync_lock import ProcessSyncLock
@@ -1397,7 +1398,10 @@ function formatEventSyncStatus(data) {
   var failed = Number.isFinite(data.batches_failed) ? data.batches_failed : 0;
   var connack = Number.isFinite(data.mqtt_connack_timeout_seconds) ? data.mqtt_connack_timeout_seconds.toFixed(1) + 's' : '-';
   var publish = Number.isFinite(data.mqtt_publish_timeout_seconds) ? data.mqtt_publish_timeout_seconds.toFixed(1) + 's' : '-';
-  return '事件同步: ' + transport + ' | 待发送 ' + pending + ' | 成功 ' + succeeded + ' | 失败 ' + failed + ' | 握手/发布确认超时 ' + connack + '/' + publish;
+  var mqttConfig = data.mqtt_config || {};
+  var configState = mqttConfig.configured ? '配置就绪' : '配置待完善';
+  var securityMode = mqttConfig.tls ? 'TLS' : '本机/未启用';
+  return '事件同步: ' + transport + ' | ' + configState + ' | ' + securityMode + ' | 待发送 ' + pending + ' | 成功 ' + succeeded + ' | 失败 ' + failed + ' | 握手/发布确认超时 ' + connack + '/' + publish;
 }
 
 async function loadEventSyncStatus() {
@@ -2626,6 +2630,14 @@ def api_offline_events_sync_status():
         pending=len(offline_event_cache.list_pending()),
         mqtt_connack_timeout=MQTT_CONNACK_TIMEOUT if transport_name == "mqtt" else None,
         mqtt_publish_timeout=MQTT_PUBLISH_TIMEOUT if transport_name == "mqtt" else None,
+        mqtt_config=build_mqtt_config_status(
+            MQTT_BROKER_URL,
+            MQTT_TOPIC,
+            MQTT_CLIENT_ID,
+            MQTT_USERNAME,
+            MQTT_PASSWORD,
+            MQTT_CA_CERTS,
+        ),
     ))
 
 

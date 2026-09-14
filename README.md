@@ -219,6 +219,8 @@ AgriVision/
 
 阶段 36 已增加浏览器控制台错误回归，确保事件同步状态故障不会演变为实时监控页面的未处理前端错误。
 
+阶段 37 已加入 MQTT 部署前安全预检，实时面板可显示配置是否就绪和 TLS 模式，但不会显示 broker 地址或任何凭据。
+
 公开发布门禁已在 GitHub Actions 对提交 `1c68338` 验证通过：[查看 CI 运行记录](https://github.com/sun2006-xin/AgriVision/actions/runs/34762246684)。
 
 MQTT 契约测试也已在 GitHub Actions 对提交 `de89384` 验证通过：[查看 MQTT CI 运行记录](https://github.com/sun2006-xin/AgriVision/actions/runs/34762437681)。这不代表真实 broker 或 ESP32 已完成联调。

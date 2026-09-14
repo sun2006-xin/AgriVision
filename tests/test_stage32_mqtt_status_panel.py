@@ -15,11 +15,13 @@ class Stage32MqttStatusPanelTests(unittest.TestCase):
 
     def test_panel_formats_only_bounded_status_values(self):
         source = (ROOT / "system_b" / "core" / "app.py").read_text(encoding="utf-8")
-        self.assertIn("formatEventSyncStatus", source)
-        self.assertIn("batches_succeeded", source)
-        self.assertIn("batches_failed", source)
-        self.assertNotIn("MQTT_PASSWORD", source[source.find("function formatEventSyncStatus"):])
-        self.assertNotIn("MQTT_USERNAME", source[source.find("function formatEventSyncStatus"):])
+        start = source.index("function formatEventSyncStatus")
+        end = source.index("async function loadEventSyncStatus", start)
+        formatter = source[start:end]
+        self.assertIn("batches_succeeded", formatter)
+        self.assertIn("batches_failed", formatter)
+        self.assertNotIn("MQTT_PASSWORD", formatter)
+        self.assertNotIn("MQTT_USERNAME", formatter)
 
 
 if __name__ == "__main__":

@@ -51,6 +51,7 @@ class EventSyncStatus:
         pending,
         mqtt_connack_timeout=None,
         mqtt_publish_timeout=None,
+        mqtt_config=None,
     ):
         with self._lock:
             return {
@@ -61,6 +62,7 @@ class EventSyncStatus:
                 "pending": max(0, int(pending)),
                 "mqtt_connack_timeout_seconds": mqtt_connack_timeout,
                 "mqtt_publish_timeout_seconds": mqtt_publish_timeout,
+                "mqtt_config": mqtt_config,
                 "batches_succeeded": self._batches_succeeded,
                 "batches_failed": self._batches_failed,
                 "events_sent": self._events_sent,
