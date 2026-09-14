@@ -1,0 +1,24 @@
+services:
+  system-b:
+    build:
+      context: .
+      dockerfile: Dockerfile.system-b
+    ports:
+      - "5000:5000"
+    environment:
+      AGRIVISION_API_TOKEN: "${AGRIVISION_API_TOKEN:?set AGRIVISION_API_TOKEN in the shell or .env}"
+      AGRIVISION_ALERT_WEBHOOK_URL: "${AGRIVISION_ALERT_WEBHOOK_URL:-}"
+      AGRIVISION_ALERT_WEBHOOK_SECRET: ${AGRIVISION_ALERT_WEBHOOK_SECRET:-}
+      AGRIVISION_WEBHOOK_ALLOWED_HOSTS: "${AGRIVISION_WEBHOOK_ALLOWED_HOSTS:-oapi.dingtalk.com}"
+    volumes:
+      - agrivision-system-b-data:/app/system_b/core/detection_logs
+      - ./system_b/models:/app/system_b/models:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health/live', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  agrivision-system-b-data:

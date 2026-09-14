@@ -24,11 +24,10 @@ VENV_DIR = os.path.join(BASE_DIR, '.venv')
 sys.path.insert(0, VENV_DIR)
 
 # ---------- Web 框架与图像处理依赖 ----------
-from flask import Flask, Response, g, jsonify, request, send_file, send_from_directory  # Flask: Web 框架; Response: 自定义响应(视频流); jsonify: JSON 响应; request: 请求对象; send_file: 文件下载; send_from_directory: 目录文件发送
+from flask import Flask, Response, g, jsonify, request  # Flask: Web 框架; Response: 自定义响应(视频流); jsonify: JSON 响应; request: 请求对象
 import cv2              # OpenCV: 图像编解码、绘制文字、形态学操作等
 import time             # 时间相关：计时、延时、时间戳格式化
 import threading        # 多线程支持：后台检测循环、SD 同步循环、线程锁
-import traceback        # 异常堆栈打印，用于调试后台线程中的错误
 import numpy as np      # 数值计算库：生成占位图、图像数组操作
 import requests         # HTTP 客户端：从 ESP32 获取图片/文件列表、触发远程拍照
 
@@ -83,6 +82,7 @@ cameras = load_cameras_config()
 
 # SYSTEM_A_URL: System A 诊断站地址，用于 A-B 浅连接（Phase 11）
 SYSTEM_A_URL = "http://127.0.0.1:8000"
+SYSTEM_A_API_TOKEN = os.environ.get("AGRIVISION_SYSTEM_A_API_TOKEN", os.environ.get("AGRIVISION_API_TOKEN", "")).strip()
 if os.path.exists(CAMERAS_JSON):
     with open(CAMERAS_JSON, 'r', encoding='utf-8') as _f:
         SYSTEM_A_URL = json.load(_f).get("system_a_url", SYSTEM_A_URL)
@@ -133,7 +133,7 @@ from yolo_detector import YOLODetector, get_detector   # YOLO 检测器封装
 from dual_verifier import DualVerifier                  # 双引擎验证融合器
 from alert_notifier import get_notifier                 # 智能告警通知器
 from health import build_service_health, summarize_camera
-from observability import resolve_request_id
+from observability import log_event, resolve_request_id
 from event_schema import build_detection_event, project_event
 from offline_cache import OfflineEventCache
 from event_transport import EventTransport, send_events_http
@@ -142,10 +142,23 @@ from mqtt_config_status import build_mqtt_config_status
 from event_scheduler import EventSyncScheduler
 from event_sync_status import EventSyncStatus
 from process_sync_lock import ProcessSyncLock
+from schemas.api import validate_alert_patch, validate_sync_request, validate_yolo_patch
+from services.metrics import MetricsRegistry
+from services.security import ApiSecurity
+from services.storage import filter_camera_filenames
+from workers.camera_tasks import CameraTaskManager
+from routes.engineering import register_engineering_routes
+from routes.monitoring import register_monitoring_routes
+from routes.history import register_history_routes
+from routes.storage import register_storage_routes
 
 # 创建 Flask 应用实例
 app = Flask(__name__)
 logger = logging.getLogger("agrivision.system_b")
+metrics = MetricsRegistry()
+api_security = ApiSecurity.from_env()
+camera_task_manager = CameraTaskManager(cameras.keys(), metrics=metrics, logger=logger)
+register_engineering_routes(app, camera_task_manager, metrics)
 
 
 @app.before_request
@@ -159,15 +172,34 @@ def finish_request_observation(response):
     request_id = getattr(g, "request_id", "")
     response.headers["X-Request-ID"] = request_id
     elapsed_ms = (time.perf_counter() - getattr(g, "request_started", time.perf_counter())) * 1000
-    logger.info(
-        "request_completed event=request_completed method=%s path=%s status=%s duration_ms=%.1f request_id=%s",
-        request.method,
-        request.path,
-        response.status_code,
-        elapsed_ms,
-        request_id,
+    # 未匹配路由使用固定标签，避免把任意请求路径写成高基数指标标签。
+    route = request.url_rule.rule if request.url_rule is not None else "unmatched"
+    metrics.observe_http(request.method, route, response.status_code, elapsed_ms / 1000.0)
+    log_event(
+        logger,
+        logging.INFO,
+        "request_completed",
+        method=request.method,
+        route=route,
+        status=response.status_code,
+        duration_ms=round(elapsed_ms, 1),
+        request_id=request_id,
     )
     return response
+
+
+@app.before_request
+def enforce_api_security():
+    decision = api_security.authorize(request.path, request.remote_addr, request.headers)
+    if decision.status == "allow":
+        return None
+    if decision.status == "rate_limited":
+        response = jsonify({"error": "rate limit exceeded"})
+        response.headers["Retry-After"] = str(decision.retry_after)
+        return response, 429
+    if decision.reason == "invalid_api_token":
+        return jsonify({"error": "authentication required"}), 401
+    return jsonify({"error": "API authentication is not configured"}), 503
 
 # ============================================================
 # 配置常量 - 系统运行时使用的全局常量与状态字典
@@ -232,8 +264,8 @@ event_transport = None
 if EVENTS_SINK_URL:
     try:
         event_transport = EventTransport(EVENTS_SINK_URL, send_events_http)
-    except ValueError as error:
-        logger.warning("event_sink_config_invalid error=%s", error)
+    except ValueError:
+        log_event(logger, logging.WARNING, "event_sink_config_invalid")
 
 mqtt_transport = None
 mqtt_close = None
@@ -308,7 +340,7 @@ def sync_offline_events_once():
             )
         return {**result, "pending": pending}
     except Exception:
-        logger.exception("automatic offline event sync failed")
+        log_event(logger, logging.ERROR, "automatic_offline_event_sync_failed", stage="runtime")
         event_sync_status.record(
             "failure",
             transport_name,
@@ -338,6 +370,11 @@ def stop_event_sync_scheduler():
     if event_sync_scheduler is not None:
         event_sync_scheduler.stop(timeout=5)
 
+
+@atexit.register
+def stop_camera_task_workers():
+    camera_task_manager.stop_all(timeout=5)
+
 # 异常图片保存间隔（秒）：当检测到"注意"及以上等级时，每隔此时间保存一张标注图到 detection_logs/
 SAVE_INTERVAL = 60
 
@@ -360,6 +397,25 @@ save_sd_info = {
     "error": "",                # 拍照错误信息
     "file": "",                 # 拍照成功后 ESP32 返回的文件名
 }
+
+# 每个摄像头拥有独立的同步/拍照状态。保留上面的两个对象作为旧调用方
+# 的兼容默认状态，但运行时状态不再由所有摄像头共享。
+camera_sd_sync_info = {
+    camera_id: dict(sd_sync_info) for camera_id in cameras
+}
+camera_save_sd_info = {
+    camera_id: dict(save_sd_info) for camera_id in cameras
+}
+
+
+def _get_sd_sync_info(camera_id=None):
+    camera_id = camera_id or _get_default_camera_id()
+    return camera_sd_sync_info.get(camera_id, sd_sync_info)
+
+
+def _get_save_sd_info(camera_id=None):
+    camera_id = camera_id or _get_default_camera_id()
+    return camera_save_sd_info.get(camera_id, save_sd_info)
 
 # ============================================================
 # 全局变量 - 在检测线程和 Web 请求线程之间共享的运行时状态
@@ -409,6 +465,33 @@ alert_notifier = get_notifier()
 
 # yolo_enabled: YOLO 引擎总开关，可通过 API 动态启停
 yolo_enabled = True
+
+register_monitoring_routes(
+    app,
+    cameras=cameras,
+    get_default_camera_id=_get_default_camera_id,
+    get_sd_sync_info=_get_sd_sync_info,
+    sd_lock=sd_lock,
+    yolo_detector=yolo_detector,
+    get_yolo_enabled=lambda: yolo_enabled,
+    summarize_camera=summarize_camera,
+    build_service_health=build_service_health,
+    comparison_history_size=COMPARISON_HISTORY_SIZE,
+)
+register_history_routes(app, history_manager)
+register_storage_routes(
+    app,
+    data_set_dir=DATASET_DIR,
+    cameras=cameras,
+    get_default_camera_id=_get_default_camera_id,
+    task_manager=camera_task_manager,
+    save_to_sd=lambda camera_id: save_to_sd_async(camera_id),
+    sync_sd=lambda camera_id: sync_sd_card(camera_id),
+    save_state_lock=save_sd_lock,
+    get_save_state=_get_save_sd_info,
+    sync_state_lock=sd_lock,
+    get_sync_state=_get_sd_sync_info,
+)
 
 
 # ============================================================
@@ -478,6 +561,7 @@ def run_detection_once(camera_id=None):
         # 图像获取失败处理: 可能是 ESP32 断连、网络超时或测试图片路径无效
         if img is None:
             state["last_error"] = "获取图片失败"
+            log_event(logger, logging.WARNING, "camera_frame_unavailable", camera_id=camera_id)
             print(f"  -> {state['last_error']}")
             return False
 
@@ -506,7 +590,9 @@ def run_detection_once(camera_id=None):
         #   annotated: 标注后的图像（numpy 数组，已绘制检测框和文字）
         #   masks: 各分割 mask 字典（叶片/病斑/虫害的单独 mask 图）
         # ============================================================
+        color_started = time.perf_counter()
         result, annotated, masks = detect_and_annotate(img, config)
+        metrics.observe_inference("color", (time.perf_counter() - color_started) * 1000)
 
         # ============================================================
         # 第三步B: YOLO 引擎检测（新增）
@@ -514,6 +600,7 @@ def run_detection_once(camera_id=None):
         yolo_detections = []
         if yolo_enabled and yolo_detector.is_loaded():
             yolo_detections = yolo_detector.detect(img)
+            metrics.observe_inference("yolo", yolo_detector._last_inference_ms)
             # 在标注图上叠加 YOLO 检测框（虚线框，与颜色引擎的实线框区分）
             annotated = yolo_detector.annotate(annotated, yolo_detections)
 
@@ -610,8 +697,8 @@ def run_detection_once(camera_id=None):
         # 队列只保存事件摘要，不保存图像、URL 或通知配置。
         try:
             offline_event_cache.put(build_detection_event(camera_id, stable_result))
-        except (TypeError, ValueError, OSError) as cache_error:
-            logger.warning("offline_event_enqueue_failed event=offline_event_enqueue_failed error=%s", cache_error)
+        except (TypeError, ValueError, OSError):
+            log_event(logger, logging.WARNING, "offline_event_enqueue_failed", camera_id=camera_id)
 
         # 将标注后的图像编码为 JPEG 字节流
         _, buf = cv2.imencode('.jpg', annotated)
@@ -664,16 +751,18 @@ def run_detection_once(camera_id=None):
                 pest_ratio=stable_result.get('white_ratio', 0.0),
                 confidence=dual_result.get('confidence', ''),
             )
+            metrics.inc_alert("success" if alert_result.get("sent") else "failure")
             if alert_result['sent']:
                 print(f"  -> [告警] 已推送钉钉通知: {local_stable_level}")
 
         state["last_error"] = ""
         return True
-    except Exception as e:
+    except Exception:
+        metrics.inc("agrivision_detection_errors_total", {"stage": "runtime"})
         # 异常处理: 捕获所有未预期的错误，避免后台线程崩溃
-        state["last_error"] = f"检测出错: {str(e)}"
+        state["last_error"] = "检测暂不可用"
+        log_event(logger, logging.ERROR, "detection_failed", camera_id=camera_id, stage="runtime")
         print(f"  -> {state['last_error']}")
-        traceback.print_exc()    # 打印完整堆栈信息，便于调试
         return False
 
 
@@ -681,16 +770,14 @@ def run_detection_once(camera_id=None):
 # SD 卡同步函数 - 从 ESP32-CAM 的 SD 卡下载新图片到本地
 # ============================================================
 # 该函数可被以下两种方式触发:
-#   1. 后台 sd_sync_loop 线程每隔 SD_SYNC_INTERVAL (300秒) 自动调用
-#   2. 用户在前端点击"立即同步"按钮，通过 /api/sync_now 接口手动触发
+#   1. CameraTaskManager 的每摄像头周期 worker 每隔 SD_SYNC_INTERVAL (300秒) 投递
+#   2. 用户在前端点击"立即同步"按钮，通过 /api/sync_now 投递到对应摄像头队列
 # 同步流程:
 #   1. 请求 ESP32 的 /list 接口获取 SD 卡上的文件列表
 #   2. 与本地已有文件做去重比对，找出新文件
 #   3. 逐个下载新文件到本地 dataset/images/ 目录
 #   4. 更新同步状态信息（供前端轮询显示进度）
 def sync_sd_card(camera_id=None):
-    global sd_sync_info
-    
     # 获取摄像头配置
     if camera_id is None:
         camera_id = _get_default_camera_id()
@@ -698,6 +785,9 @@ def sync_sd_card(camera_id=None):
     if not cam:
         print(f"[SD同步] 摄像头 {camera_id} 不存在")
         return
+
+    # 绑定到当前摄像头的状态，避免多摄像头同步互相覆盖进度。
+    sd_sync_info = _get_sd_sync_info(camera_id)
     
     esp32_base = cam["base"]
 
@@ -732,7 +822,7 @@ def sync_sd_card(camera_id=None):
                 sd_sync_info["sync_error"] = err_msg
             print(f"[SD同步] {err_msg}")
             return
-        sd_files = resp.json()
+        sd_files = filter_camera_filenames(resp.json())
         with sd_lock:
             sd_sync_info["sd_card_files"] = len(sd_files)
 
@@ -777,9 +867,9 @@ def sync_sd_card(camera_id=None):
                     time.sleep(1)
                 else:
                     print(f"  [SD同步] 下载 {filename} 失败，状态码: {img_resp.status_code}")
-            except Exception as e:
+            except Exception:
                 # 单个文件下载失败不中断整个同步流程，记录错误后继续下一个
-                print(f"  [SD同步] 下载 {filename} 失败: {e}")
+                log_event(logger, logging.WARNING, "sd_file_download_failed", camera_id=camera_id)
 
         # --- 第四步: 更新最终同步状态 ---
         with sd_lock:
@@ -789,12 +879,13 @@ def sync_sd_card(camera_id=None):
             progress_msg = sd_sync_info['sync_progress']
         print(f"[SD同步] {progress_msg}")
 
-    except Exception as e:
+    except Exception:
         # 整体异常处理（如 ESP32 连接失败等网络错误）
         with sd_lock:
-            sd_sync_info["sync_error"] = f"同步失败: {e}"
-            sd_sync_info["sync_progress"] = f"错误: {e}"
+            sd_sync_info["sync_error"] = "同步失败，请检查摄像头连接"
+            sd_sync_info["sync_progress"] = "同步失败"
             err_msg = sd_sync_info['sync_error']
+        log_event(logger, logging.ERROR, "sd_sync_failed", camera_id=camera_id)
         print(f"[SD同步] {err_msg}")
     finally:
         # 无论成功或失败，都必须在 finally 中重置 syncing 标志
@@ -806,16 +897,15 @@ def sync_sd_card(camera_id=None):
 # ============================================================
 # 远程拍照存卡函数 - 触发 ESP32-CAM 拍摄一张照片并保存到 SD 卡
 # ============================================================
-# 该函数由 /api/save_to_sd 路由在独立守护线程中调用（异步执行）。
+# 该函数由 /api/save_to_sd 路由投递到对应摄像头的有界 worker（异步执行）。
 # 工作流程: 向 ESP32 发送 GET /save 请求 -> ESP32 拍照并写入 SD 卡 -> 返回文件名
 # 使用异步方式是因为 ESP32 拍照+写卡可能耗时数秒，不能阻塞 Web 请求线程。
 # 前端通过轮询 /api/save_status 接口获取执行进度。
 def save_to_sd_async(camera_id=None):
-    global save_sd_info
-    
     # 获取摄像头配置
     if camera_id is None:
         camera_id = _get_default_camera_id()
+    save_sd_info = _get_save_sd_info(camera_id)
     cam = cameras.get(camera_id)
     if not cam:
         with save_sd_lock:
@@ -842,9 +932,10 @@ def save_to_sd_async(camera_id=None):
         else:
             with save_sd_lock:
                 save_sd_info["error"] = f"ESP32 返回状态码: {resp.status_code}"
-    except Exception as e:
+    except Exception:
         with save_sd_lock:
-            save_sd_info["error"] = str(e)
+            save_sd_info["error"] = "拍照失败，请检查摄像头连接"
+        log_event(logger, logging.ERROR, "save_to_sd_failed", camera_id=camera_id)
     finally:
         with save_sd_lock:
             save_sd_info["saving"] = False
@@ -852,32 +943,32 @@ def save_to_sd_async(camera_id=None):
 
 
 # ============================================================
-# 后台线程循环 - 系统启动后以守护线程方式持续运行
+# 周期任务兼容入口 - 委托给 CameraTaskManager
 # ============================================================
-# 守护线程 (daemon=True): 当主线程（Flask 服务器）退出时，这些线程会自动终止
-# 系统共有两个后台线程:
-#   1. detection_loop: 负责周期性执行病虫害检测
-#   2. sd_sync_loop:  负责周期性从 ESP32 SD 卡同步图片
-
-# SD 卡同步循环: 每隔 SD_SYNC_INTERVAL (300秒 = 5分钟) 自动同步一次
-# 在系统启动时首次执行会在主线程完成，此循环从第二次开始
+# 保留函数名供旧调用方使用，但不再在这里创建不可停止的 while True 循环。
 def sd_sync_loop(camera_id=None):
-    print(f"[SD同步线程] 已启动 (摄像头: {camera_id})")
-    while True:
-        sync_sd_card(camera_id)
-        time.sleep(SD_SYNC_INTERVAL)   # 阻塞等待下一个同步周期
+    camera_id = camera_id or _get_default_camera_id()
+    return camera_task_manager.start_periodic(
+        camera_id,
+        "sd_sync",
+        lambda: sync_sd_card(camera_id),
+        SD_SYNC_INTERVAL,
+    )
 
 
-# 检测循环: 每隔 3 秒执行一次检测
+# 检测周期任务: 每隔 3 秒向对应队列投递一次检测
 # 3 秒间隔的选取考量:
 #   - ESP32-CAM 拍摄+传输一张 SVGA (800x600) 图片约需 0.5-1 秒
 #   - 检测算法处理一帧约需 0.3-0.5 秒
 #   - 剩余时间作为余量，确保不会因网络波动导致帧积压
 def detection_loop(camera_id=None):
-    print(f"[后台线程] 检测循环已启动 (摄像头: {camera_id})")
-    while True:
-        run_detection_once(camera_id)
-        time.sleep(3)  # 每次检测后等待 3 秒再开始下一帧
+    camera_id = camera_id or _get_default_camera_id()
+    return camera_task_manager.start_periodic(
+        camera_id,
+        "detection",
+        lambda: run_detection_once(camera_id),
+        3,
+    )
 
 
 # ============================================================
@@ -1173,7 +1264,7 @@ canvas { width: 100% !important; }
               </div>
               <div class="alert-row">
                 <label>Webhook URL</label>
-                <input type="text" class="alert-input" id="alertWebhook" placeholder="https://oapi.dingtalk.com/robot/send?access_token=..." onblur="saveAlertConfig()">
+                <input type="text" class="alert-input" id="alertWebhook" placeholder="已配置的 Webhook 不会回显；重新输入才修改" onblur="saveAlertConfig()">
               </div>
               <div class="alert-row">
                 <label>冷却时间 (秒)</label>
@@ -1323,6 +1414,28 @@ canvas { width: 100% !important; }
 <div class="toast" id="toast"></div>
 
 <script>
+// 远程部署启用 API token 时，页面用一次性会话输入获得认证；token 不写入 URL。
+(function configureApiAuthentication() {
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async function(resource, options) {
+        const requestOptions = Object.assign({}, options || {});
+        const headers = new Headers(requestOptions.headers || {});
+        const token = sessionStorage.getItem('agrivision_api_token') || '';
+        if (token) headers.set('Authorization', 'Bearer ' + token);
+        requestOptions.headers = headers;
+        let response = await nativeFetch(resource, requestOptions);
+        if (response.status === 401 && !token) {
+            const entered = window.prompt('请输入 System B API token（仅保存在本次浏览器会话）');
+            if (entered && entered.trim()) {
+                sessionStorage.setItem('agrivision_api_token', entered.trim());
+                const retryHeaders = new Headers(headers);
+                retryHeaders.set('Authorization', 'Bearer ' + entered.trim());
+                response = await nativeFetch(resource, Object.assign({}, requestOptions, {headers: retryHeaders}));
+            }
+        }
+        return response;
+    };
+})();
 let count = 0;
 let syncPollTimer = null;
 let savePollTimer = null;
@@ -1555,7 +1668,11 @@ async function loadAlertConfig() {
     var res = await fetch('/api/alert/config');
     var data = await res.json();
     document.getElementById('alertEnable').checked = data.enabled;
-    document.getElementById('alertWebhook').value = data.webhook_url || '';
+    var webhookInput = document.getElementById('alertWebhook');
+    webhookInput.value = '';
+    webhookInput.placeholder = data.webhook_url_masked
+      ? '已配置: ' + data.webhook_url_masked + '（不会回显）'
+      : '未配置；请输入允许列表中的 HTTPS Webhook';
     document.getElementById('alertCooldown').value = data.cooldown_seconds || 300;
     document.getElementById('cooldownVal').textContent = (data.cooldown_seconds || 300) + 's';
   } catch(e) { console.error('loadAlertConfig error:', e); }
@@ -1563,14 +1680,17 @@ async function loadAlertConfig() {
 
 async function saveAlertConfig() {
   try {
+    var webhookInput = document.getElementById('alertWebhook');
+    var payload = {
+      enabled: document.getElementById('alertEnable').checked,
+      cooldown_seconds: parseInt(document.getElementById('alertCooldown').value) || 300
+    };
+    // 空输入只更新开关/冷却时间，避免安全掩码导致已有 URL 被清空。
+    if (webhookInput.value.trim()) payload.webhook_url = webhookInput.value.trim();
     await fetch('/api/alert/config', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        enabled: document.getElementById('alertEnable').checked,
-        webhook_url: document.getElementById('alertWebhook').value.trim(),
-        cooldown_seconds: parseInt(document.getElementById('alertCooldown').value) || 300
-      })
+      body: JSON.stringify(payload)
     });
   } catch(e) { console.error('saveAlertConfig error:', e); }
 }
@@ -2166,104 +2286,14 @@ def index():
     return HTML_PAGE
 
 
-@app.route('/health/live')
-def health_live():
-    """Liveness probe: the web process is accepting requests."""
-    return jsonify({"status": "alive", "service": "system-b"})
-
-
-@app.route('/health/ready')
-def health_ready():
-    """Readiness probe: report model and camera availability."""
-    camera_summaries = []
-    for camera_id, camera in cameras.items():
-        with camera["state"]["frame_lock"]:
-            camera_summaries.append(summarize_camera(camera_id, camera["state"]))
-
-    camera_ready = any(camera["has_frame"] for camera in camera_summaries if cameras[camera["id"]].get("enabled", True))
-    yolo_ready = (not yolo_enabled) or yolo_detector.is_loaded()
-    payload = build_service_health("system-b", {"camera": camera_ready, "yolo": yolo_ready})
-    payload["cameras"] = camera_summaries
-    return jsonify(payload), (200 if payload["status"] == "ready" else 503)
-
-
-@app.route('/health')
-def health():
-    """Compatibility health endpoint; use /health/ready for deployment probes."""
-    return health_ready()
-
-
-# ---------- 2. 摄像头接口 ----------
-@app.route('/api/cameras')
-def api_cameras():
-    """返回所有摄像头配置（不含内部state）"""
-    result = {}
-    for cid, cam in cameras.items():
-        result[cid] = {"id": cam["id"], "name": cam["name"], "enabled": cam.get("enabled", True)}
-    return jsonify({"cameras": result})
-
-
-# ---------- 3. 状态接口 ----------
-# 前端每 2 秒轮询此接口获取最新检测结果和 SD 同步状态
-# 返回 JSON: { level, level_code, disease_count, white_count, disease_ratio, white_ratio, green_ratio, error, sd_sync }
-@app.route('/api/status')
-def api_status():
-    camera_id = request.args.get('camera_id', _get_default_camera_id())
-    cam = cameras.get(camera_id)
-    if not cam:
-        return jsonify({"error": "摄像头不存在"}), 404
-    state = cam["state"]
-    # 加锁复制检测结果，避免读取过程中被检测线程覆盖
-    with state["frame_lock"]:
-        data = state["latest_result"].copy()
-    # 附加错误信息
-    data['error'] = state["last_error"]
-    # 附加 SD 卡同步状态信息
-    with sd_lock:
-        data['sd_sync'] = sd_sync_info.copy()
-    return jsonify(data)
-
-
-# ---------- 3B. 双引擎接口 ----------
-# /api/dual_status: 返回双引擎融合后的检测状态
-@app.route('/api/dual_status')
-def api_dual_status():
-    camera_id = request.args.get('camera_id', _get_default_camera_id())
-    cam = cameras.get(camera_id)
-    if not cam:
-        return jsonify({"error": "摄像头不存在"}), 404
-    state = cam["state"]
-    with state["frame_lock"]:
-        # 基础状态（颜色引擎 + 防抖等级）
-        data = state["latest_result"].copy()
-        # 双引擎融合结果
-        if state["latest_dual_result"] is not None:
-            data['dual'] = state["latest_dual_result"]
-        else:
-            data['dual'] = None
-        # YOLO 引擎开关状态
-        data['yolo_enabled'] = yolo_enabled
-        data['yolo_loaded'] = yolo_detector.is_loaded()
-    data['error'] = state["last_error"]
-    with sd_lock:
-        data['sd_sync'] = sd_sync_info.copy()
-    return jsonify(data)
-
-
-# /api/yolo_stats: 返回 YOLO 模型运行状态和统计信息
-@app.route('/api/yolo_stats')
-def api_yolo_stats():
-    return jsonify(yolo_detector.get_stats())
-
-
 # /api/yolo/config: 更新 YOLO 检测参数
 @app.route('/api/yolo/config', methods=['POST'])
 def api_yolo_config():
     global yolo_enabled
     try:
-        params = request.get_json()
+        params = validate_yolo_patch(request.get_json(silent=True))
         if 'enabled' in params:
-            yolo_enabled = bool(params['enabled'])
+            yolo_enabled = params['enabled']
             print(f"[API] YOLO 引擎: {'启用' if yolo_enabled else '禁用'}")
         if 'conf_threshold' in params or 'iou_threshold' in params:
             yolo_detector.update_config(
@@ -2275,26 +2305,10 @@ def api_yolo_config():
         if 'dual_yolo_conf_low' in params:
             dual_verifier.yolo_conf_low = float(params['dual_yolo_conf_low'])
         return jsonify({"success": True, "message": "YOLO 参数已更新"})
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
-
-
-# /api/comparison: 获取最近 N 帧的双引擎对比数据
-@app.route('/api/comparison')
-def api_comparison():
-    camera_id = request.args.get('camera_id', _get_default_camera_id())
-    cam = cameras.get(camera_id)
-    if not cam:
-        return jsonify({"frames": [], "total": 0})
-    state = cam["state"]
-    n = request.args.get('n', 50, type=int)
-    n = min(n, COMPARISON_HISTORY_SIZE)
-    with state["frame_lock"]:
-        history_copy = list(state["comparison_history"])
-    return jsonify({
-        'frames': history_copy[-n:],
-        'total': len(history_copy)
-    })
+    except ValueError as error:
+        return jsonify({"success": False, "message": str(error)}), 400
+    except Exception:
+        return jsonify({"success": False, "message": "YOLO 参数更新失败"}), 500
 
 
 # ---------- 3C. 告警通知接口 ----------
@@ -2307,15 +2321,17 @@ def api_alert_config():
         return jsonify(alert_notifier.get_config())
     else:
         try:
-            params = request.get_json()
+            params = validate_alert_patch(request.get_json(silent=True))
             result = alert_notifier.configure(
                 webhook_url=params.get('webhook_url'),
                 enabled=params.get('enabled'),
                 cooldown=params.get('cooldown_seconds')
             )
             return jsonify({"success": True, "config": result})
-        except Exception as e:
-            return jsonify({"success": False, "message": str(e)}), 500
+        except ValueError as error:
+            return jsonify({"success": False, "message": str(error)}), 400
+        except Exception:
+            return jsonify({"success": False, "message": "告警配置更新失败"}), 500
 
 
 @app.route('/api/alert/history')
@@ -2334,8 +2350,8 @@ def api_alert_test():
             confidence='high',
         )
         return jsonify({'success': result.get('sent', False), 'reason': result.get('reason', '')})
-    except Exception as e:
-        return jsonify({'success': False, 'message': str(e)}), 500
+    except Exception:
+        return jsonify({'success': False, 'message': '测试告警失败'}), 500
 
 
 # ---------- 4. 参数接口 ----------
@@ -2358,8 +2374,8 @@ def api_params():
             with config_lock:
                 config_manager.update_params(params)
             return jsonify({"success": True, "message": "参数已保存"})
-        except Exception as e:
-            return jsonify({"success": False, "message": str(e)}), 500
+        except Exception:
+            return jsonify({"success": False, "message": "参数保存失败"}), 500
 
 
 # 获取参数元信息: 每个参数的显示名称、最小值、最大值、步长、单位
@@ -2377,8 +2393,8 @@ def api_params_reset():
         with config_lock:
             config_manager.reset_config()
         return jsonify({"success": True, "params": config_manager.get_current_config()})
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+    except Exception:
+        return jsonify({"success": False, "message": "参数重置失败"}), 500
 
 
 # ---------- 5. 预览接口 ----------
@@ -2409,156 +2425,9 @@ def api_preview_mask():
         # 调用检测模块的 mask 生成函数，返回 JPEG 编码的字节数据
         mask_data = generate_mask_image(image, params, mask_type)
         return Response(mask_data, mimetype='image/jpeg')
-    except Exception as e:
-        print(f"预览生成失败: {e}")
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
-
-
-# ---------- 6. 历史记录接口 ----------
-# 分页查询历史检测记录，支持按日期范围和等级过滤
-# 查询参数: page(页码), date_from(起始日期), date_to(结束日期), level(等级过滤)
-# 返回 JSON: { records: [...], pages: 总页数 }
-@app.route('/api/history')
-def api_history():
-    try:
-        page = int(request.args.get('page', 1))
-        date_from = request.args.get('date_from')
-        date_to = request.args.get('date_to')
-        level = request.args.get('level', None)
-
-        # 空字符串视为不过滤（前端 select 未选择时传空字符串）
-        if level == '':
-            level = None
-
-        result = history_manager.query_records(date_from, date_to, level, page)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# 趋势数据接口: 返回近 N 天（默认 7 天）每日的平均病斑数和虫害数
-# 返回 JSON: { dates: [...], disease_counts: [...], pest_counts: [...] }
-# 前端使用 Chart.js 渲染为折线图
-@app.route('/api/history/trend')
-def api_history_trend():
-    try:
-        days = int(request.args.get('days', 7))
-        result = history_manager.get_trend_data(days)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# 统计数据接口: 返回各等级的记录数量分布
-# 返回 JSON: { total_records: 总数, level_counts: { 正常: n, 注意: n, 警告: n, 严重: n } }
-@app.route('/api/history/statistics')
-def api_history_statistics():
-    try:
-        date_from = request.args.get('date_from')
-        date_to = request.args.get('date_to')
-        result = history_manager.get_statistics(date_from, date_to)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# 数据导出接口: 将指定日期范围的历史记录打包为 ZIP 文件下载
-# ZIP 内包含: CSV 数据文件 + 对应的标注图片
-@app.route('/api/history/export')
-def api_history_export():
-    try:
-        date_from = request.args.get('date_from')
-        date_to = request.args.get('date_to')
-        # 由 history_manager 生成 ZIP 文件并返回路径
-        zip_path = history_manager.export_data(date_from, date_to)
-
-        if not zip_path or not os.path.exists(zip_path):
-            return jsonify({"error": "导出失败"}), 500
-
-        # 以附件形式发送 ZIP 文件，浏览器会自动触发下载
-        return send_file(zip_path, as_attachment=True, download_name=os.path.basename(zip_path))
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# 历史记录图片查看: 根据记录 ID 返回对应的标注图
-# 前端历史记录表格中的"查看图片"按钮会打开模态框加载此 URL
-@app.route('/history/image/<record_id>')
-def serve_history_image(record_id):
-    record = history_manager.get_record_by_id(record_id)
-    # 验证记录存在、图片路径非空、文件确实存在后，才发送文件
-    if record and record.get('image_path') and os.path.exists(record['image_path']):
-        return send_file(record['image_path'], mimetype='image/jpeg')
-    return "图片不存在", 404
-
-
-# ---------- 7. SD 卡相关接口 ----------
-# 获取本地已同步的 SD 卡图片文件名列表（按时间倒序）
-# 前端相册页面使用此列表渲染图片网格
-@app.route('/api/sd_images')
-def api_sd_images():
-    if not os.path.exists(DATASET_DIR):
-        return jsonify([])
-    # 按文件名倒序排列（最新的在前面），并过滤非图片文件
-    files = sorted(os.listdir(DATASET_DIR), reverse=True)
-    files = [f for f in files if f.lower().endswith(('.jpg', '.jpeg'))]
-    return jsonify(files)
-
-
-# SD 卡图片静态访问: 根据文件名提供图片文件
-# 前端相册中的每个图片项通过此 URL 加载缩略图
-# 注意: path 类型参数支持包含斜杠的路径（如子目录下的文件）
-@app.route('/dataset/<path:filename>')
-def serve_dataset_image(filename):
-    filepath = os.path.join(DATASET_DIR, filename)
-    if not os.path.isfile(filepath):
-        return "图片不存在，请先同步", 404
-    return send_from_directory(DATASET_DIR, filename)
-
-
-# 触发远程拍照存卡: 在独立守护线程中异步执行，立即返回
-# 前端通过轮询 /api/save_status 获取执行结果
-@app.route('/api/save_to_sd')
-def api_save_to_sd():
-    camera_id = request.args.get('camera_id', _get_default_camera_id())
-    # 防止重复触发: 如果已有拍照任务在执行，拒绝新请求
-    with save_sd_lock:
-        is_saving = save_sd_info["saving"]
-    if is_saving:
-        return jsonify({"started": False, "message": "已有拍照任务在执行"})
-    # 启动守护线程执行拍照操作（daemon=True 确保主线程退出时自动清理）
-    t = threading.Thread(target=save_to_sd_async, args=(camera_id,), daemon=True)
-    t.start()
-    return jsonify({"started": True, "message": "拍照已启动"})
-
-
-# 查询远程拍照进度: 前端轮询此接口直到 done=True
-@app.route('/api/save_status')
-def api_save_status():
-    with save_sd_lock:
-        return jsonify(dict(save_sd_info))
-
-
-# 手动触发 SD 卡同步: 在独立守护线程中异步执行
-# 与后台自动同步共享同一个 sync_sd_card() 函数，通过 syncing 标志防重复
-@app.route('/api/sync_now')
-def api_sync_now():
-    camera_id = request.args.get('camera_id', _get_default_camera_id())
-    with sd_lock:
-        syncing = sd_sync_info["syncing"]
-    if syncing:
-        return jsonify({"started": False, "message": "同步已在进行中"})
-    t = threading.Thread(target=sync_sd_card, args=(camera_id,), daemon=True)
-    t.start()
-    return jsonify({"started": True, "message": "同步已启动"})
-
-
-# 查询 SD 卡同步状态: 前端轮询此接口显示同步进度
-@app.route('/api/sync_status')
-def api_sync_status():
-    with sd_lock:
-        return jsonify(sd_sync_info.copy())
+    except Exception:
+        log_event(logger, logging.ERROR, "mask_preview_failed")
+        return jsonify({"error": "预览生成失败"}), 500
 
 
 @app.route('/api/offline_events')
@@ -2584,6 +2453,7 @@ def api_offline_events_ack():
 @app.route('/api/offline_events/sync', methods=['POST'])
 def api_offline_events_sync():
     """Manually sync a bounded batch; remove events only after 2xx delivery."""
+    # Boundary schema enforces the equivalent of: if not isinstance(params, dict): reject.
     if event_transport is None:
         return jsonify({"success": False, "error": "event sink is not configured"}), 503
     if not offline_event_sync_lock.acquire(blocking=False):
@@ -2591,11 +2461,12 @@ def api_offline_events_sync():
 
     try:
         params = request.get_json(silent=True)
-        if not isinstance(params, dict):
-            return jsonify({"success": False, "error": "request body must be a JSON object"}), 400
+        try:
+            params = validate_sync_request(params)
+        except ValueError:
+            message = "limit must be an integer from 1 to 100" if isinstance(params, dict) and "limit" in params else "request body must be a JSON object"
+            return jsonify({"success": False, "error": message}), 400
         limit = params.get("limit", 50)
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
-            return jsonify({"success": False, "error": "limit must be an integer from 1 to 100"}), 400
 
         events = offline_event_cache.list_pending()[:limit]
         result = event_transport.sync(events, offline_event_cache.ack)
@@ -2612,16 +2483,18 @@ def api_offline_events_sync():
 @app.route('/api/offline_events/sync_mqtt', methods=['POST'])
 def api_offline_events_sync_mqtt():
     """Manually publish a bounded batch through the opt-in MQTT runtime."""
+    # Boundary schema enforces the equivalent of: if not isinstance(params, dict): reject.
     if not offline_event_sync_lock.acquire(blocking=False):
         return jsonify({"success": False, "error": "event sync is already running"}), 409
 
     try:
         params = request.get_json(silent=True)
-        if not isinstance(params, dict):
-            return jsonify({"success": False, "error": "request body must be a JSON object"}), 400
+        try:
+            params = validate_sync_request(params)
+        except ValueError:
+            message = "limit must be an integer from 1 to 100" if isinstance(params, dict) and "limit" in params else "request body must be a JSON object"
+            return jsonify({"success": False, "error": message}), 400
         limit = params.get("limit", 50)
-        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
-            return jsonify({"success": False, "error": "limit must be an integer from 1 to 100"}), 400
 
         try:
             transport = get_mqtt_transport()
@@ -2789,20 +2662,21 @@ def api_deep_diagnose():
 
         # 发送到 System A 的 /report 端点
         report_url = f"{SYSTEM_A_URL}/report"
-        print(f"[诊断] 正在将 {cam['name']} 的画面发送到 System A: {report_url}")
+        log_event(logger, logging.INFO, "deep_diagnose_request", camera_id=camera_id)
 
         resp = requests.post(
             report_url,
             files={"file": ("frame.jpg", image_bytes, "image/jpeg")},
+            headers={"Authorization": f"Bearer {SYSTEM_A_API_TOKEN}"} if SYSTEM_A_API_TOKEN else {},
             timeout=180  # LLM 推理较慢，给足超时
         )
 
         if resp.status_code == 200:
             report_data = resp.json()
-            print(f"[诊断] System A 返回报告成功")
+            log_event(logger, logging.INFO, "deep_diagnose_completed", camera_id=camera_id, status=200)
             return jsonify({"success": True, "report": report_data})
         else:
-            print(f"[诊断] System A 返回错误: {resp.status_code} {resp.text[:200]}")
+            log_event(logger, logging.WARNING, "deep_diagnose_upstream_failed", camera_id=camera_id, status=resp.status_code)
             return jsonify({
                 "success": False,
                 "error": f"System A 返回 {resp.status_code}"
@@ -2812,9 +2686,9 @@ def api_deep_diagnose():
         return jsonify({"success": False, "error": "System A 响应超时（LLM推理可能需要2分钟）"}), 504
     except requests.exceptions.ConnectionError:
         return jsonify({"success": False, "error": "无法连接 System A，请确认 System A 已启动"}), 503
-    except Exception as e:
-        print(f"[诊断] 异常: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+    except Exception:
+        log_event(logger, logging.ERROR, "deep_diagnose_failed", stage="runtime")
+        return jsonify({"success": False, "error": "深度诊断失败"}), 500
 
 
 @app.route('/api/system_a/status')
@@ -2823,10 +2697,10 @@ def api_system_a_status():
     try:
         resp = requests.get(f"{SYSTEM_A_URL}/health", timeout=5)
         if resp.status_code == 200:
-            return jsonify({"online": True, "url": SYSTEM_A_URL})
-        return jsonify({"online": False, "url": SYSTEM_A_URL})
+            return jsonify({"online": True})
+        return jsonify({"online": False})
     except Exception:
-        return jsonify({"online": False, "url": SYSTEM_A_URL})
+        return jsonify({"online": False})
 
 
 # ============================================================
@@ -2967,6 +2841,28 @@ body { background:#0a1628; color:#e0e0e0; font-family:'Microsoft YaHei',sans-ser
 </div>
 
 <script>
+// 大屏页面独立加载，同样支持远程 API token 的会话认证。
+(function configureApiAuthentication() {
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = async function(resource, options) {
+        const requestOptions = Object.assign({}, options || {});
+        const headers = new Headers(requestOptions.headers || {});
+        const token = sessionStorage.getItem('agrivision_api_token') || '';
+        if (token) headers.set('Authorization', 'Bearer ' + token);
+        requestOptions.headers = headers;
+        let response = await nativeFetch(resource, requestOptions);
+        if (response.status === 401 && !token) {
+            const entered = window.prompt('请输入 System B API token（仅保存在本次浏览器会话）');
+            if (entered && entered.trim()) {
+                sessionStorage.setItem('agrivision_api_token', entered.trim());
+                const retryHeaders = new Headers(headers);
+                retryHeaders.set('Authorization', 'Bearer ' + entered.trim());
+                response = await nativeFetch(resource, Object.assign({}, requestOptions, {headers: retryHeaders}));
+            }
+        }
+        return response;
+    };
+})();
 let dashboardCameras = {};
 let expandedCam = null;
 let statusTimer = null;
@@ -3161,13 +3057,13 @@ def dashboard():
 # 启动顺序说明:
 #   1. 首先在主线程中执行一次检测（run_detection_once），
 #      确保用户打开网页时已经有第一帧数据可显示（否则视频流会显示占位图）
-#   2. 启动检测后台线程（detection_loop），以 daemon=True 守护线程运行，
-#      每 3 秒执行一次检测，持续更新 latest_frame 和 latest_result
-#   3. 启动 SD 同步后台线程（sd_sync_loop），以 daemon=True 守护线程运行，
-#      每 300 秒自动从 ESP32 SD 卡同步新图片
+#   2. 为每个摄像头注册 detection 周期任务，投递到可停止的有界 worker，
+#      每 3 秒更新 latest_frame 和 latest_result
+#   3. 为每个摄像头注册 sd_sync 周期任务，投递到可停止的有界 worker，
+#      每 300 秒从 ESP32 SD 卡同步新图片
 #   4. 打印启动信息，提示用户在浏览器中访问的地址
 #   5. 启动 Flask Web 服务器:
-#      - host='0.0.0.0': 监听所有网络接口（允许局域网内其他设备访问）
+#      - host: 默认监听回环地址；远程绑定必须配置 AGRIVISION_API_TOKEN
 #      - port=5000: Web 服务端口
 #      - debug=False: 生产模式（禁用调试重载器，避免与后台线程冲突）
 #      - threaded=True: 启用多线程处理，允许多个浏览器客户端同时访问
@@ -3176,12 +3072,17 @@ def dashboard():
 #
 # 线程架构总览:
 #   主线程:     Flask Web 服务器（处理所有 HTTP 请求）
-#   守护线程 1: detection_loop  -> run_detection_once() [每3秒] (per camera)
-#   守护线程 2: sd_sync_loop    -> sync_sd_card()       [每300秒] (per camera)
-#   临时守护线程: save_to_sd_async（用户点击拍照时创建，完成后销毁）
-#   临时守护线程: sync_sd_card（用户点击同步时创建，完成后销毁）
+#   CameraTaskManager: per camera / task 有界队列、worker、周期调度和停止信号
+#   detection: run_detection_once() [每3秒] (per camera)
+#   sd_sync: sync_sd_card() [每300秒] (per camera)
+#   save_to_sd: save_to_sd_async()（按需投递，重复任务拒绝）
 # ============================================================
 if __name__ == '__main__':
+    # 在访问摄像头或创建后台 worker 前完成网络暴露边界预检。
+    bind_host = os.environ.get("AGRIVISION_BIND_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    if bind_host not in {"127.0.0.1", "::1", "localhost"} and not api_security.api_token:
+        raise SystemExit("AGRIVISION_API_TOKEN is required for non-loopback binding")
+
     # 第一步: 为每个已启用的摄像头执行首次检测
     for cid, cam in cameras.items():
         if not cam.get("enabled", True):
@@ -3189,14 +3090,13 @@ if __name__ == '__main__':
         print(f"[启动] 摄像头 {cam['name']} ({cid}) 初始化...")
         run_detection_once(cid)
         
-        # 第二步: 启动检测后台守护线程
-        # daemon=True 表示守护线程，当主线程（Flask）退出时自动终止
-        det_thread = threading.Thread(target=detection_loop, args=(cid,), daemon=True)
-        det_thread.start()
-        
-        # 第三步: 启动 SD 卡同步后台守护线程
-        sd_thread = threading.Thread(target=sd_sync_loop, args=(cid,), daemon=True)
-        sd_thread.start()
+        # 第二、三步: 通过每摄像头独立队列启动可停止的周期任务
+        camera_task_manager.start_periodic(
+            cid, "detection", lambda cid=cid: run_detection_once(cid), 3
+        )
+        camera_task_manager.start_periodic(
+            cid, "sd_sync", lambda cid=cid: sync_sd_card(cid), SD_SYNC_INTERVAL
+        )
 
     if start_event_sync_scheduler():
         print(f"  离线事件自动同步已启用: 每 {EVENTS_SYNC_INTERVAL:g} 秒")
@@ -3211,4 +3111,4 @@ if __name__ == '__main__':
     print("=" * 50)
 
     # 第五步: 启动 Flask Web 服务器（阻塞主线程，持续监听请求）
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+    app.run(host=bind_host, port=5000, debug=False, threaded=True)

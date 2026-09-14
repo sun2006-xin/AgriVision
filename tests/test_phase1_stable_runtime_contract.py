@@ -14,9 +14,11 @@ class Phase1StableRuntimeContractTests(unittest.TestCase):
 
     def test_system_b_params_and_health_contracts_are_wired(self):
         source = (ROOT / "system_b" / "core" / "app.py").read_text(encoding="utf-8")
+        monitoring = (ROOT / "system_b" / "core" / "routes" / "monitoring.py").read_text(encoding="utf-8")
         self.assertIn("config_manager.validate_params(params)", source)
-        self.assertIn("@app.route('/health/live')", source)
-        self.assertIn("@app.route('/health/ready')", source)
+        self.assertIn("register_monitoring_routes", source)
+        self.assertIn('@blueprint.get("/health/live")', monitoring)
+        self.assertIn('@blueprint.get("/health/ready")', monitoring)
 
     def test_phase1_api_smoke_is_in_public_ci(self):
         workflow = (ROOT / ".github" / "workflows" / "public-quality.yml").read_text(encoding="utf-8")

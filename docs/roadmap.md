@@ -15,13 +15,16 @@ AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实�
 - 增加 `tools/api_smoke_phase1.py`，运行时验证 System B 存活、就绪、参数元信息和非法参数拒绝，并接入公开 CI。
 - 验收：本机真实 API 冒烟通过，完整测试、源码解析、隐私扫描和公开 CI 通过。
 
-## 阶段 2：工程化与可观测性（已完成基础项）
+## 阶段 2：工程化与可观测性（已完成）
 
-- 已增加 `/health/live` 与 `/health/ready`，区分进程存活和模型/摄像头就绪状态。
-- 已增加请求 ID、请求耗时和稳定事件名日志，不记录 URL 配置、Webhook 或图像内容。
-- 已将配置写入改为同目录临时文件 + 原子替换，降低中断写入造成 JSON 损坏的风险。
-- 已增加 6 个跨阶段回归测试；路由/检测/存储的大规模拆分、任务取消重试和固件契约测试列入下一小迭代。
-- 验收：`python -m unittest discover -s tests -v` 通过，源码 compileall 通过。
+- 将 System B 的健康/监控、历史、设备存储路由拆到 `routes/`；参数边界位于 `schemas/`，横切能力位于 `services/`，任务生命周期位于 `workers/`，历史数据访问位于 `repositories/`。
+- `HistoryRepository` 使用带索引、参数化查询的 SQLite 保存检测历史；首次启动会把旧 `history.json` 迁移到 `detection_logs/history.db`，运行时查询不再依赖 JSON 全量加载。
+- `CameraTaskManager` 为每个摄像头和任务类型提供有界队列、重复提交保护、独立状态计数、周期任务和可停止 worker；状态可通过 `/api/tasks` 查看。
+- 摄像头 SD 文件列表经过单层路径、图片扩展名、重复项和数量上限校验，避免设备返回值穿越到本地文件系统。
+- 增加 JSON 结构化请求日志、HTTP/颜色推理/YOLO 推理/队列深度/告警结果指标；Prometheus 文本指标位于 `/metrics`。
+- 增加 `Dockerfile.system-b`、`docker-compose.system-b.yml`、`.env.example`、`deploy/start_system_a.ps1` 和 `deploy/start_system_b.ps1`。本机默认只绑定回环地址；非回环部署必须设置 `AGRIVISION_API_TOKEN`。
+- System A/B 共享 Bearer/X-API-Key 认证和按来源地址的有界限流；System B→A 代理自动传递服务端 token。Webhook URL 使用主机允许列表和 HTTPS 约束，签名密钥仅从环境变量读取，配置接口只返回脱敏信息。
+- 验收：阶段一/二契约测试、完整 unittest、compileall、真实 Flask 路由检查和隐私扫描通过；Docker 镜像构建与真实设备联调仍需在目标部署环境验证。
 
 ## 阶段 3：算法评估与现场闭环（评估基础已完成）
 
@@ -51,7 +54,7 @@ AgriVision 面向温室和田间场景，提供从 ESP32-CAM 图像采集、实�
 - 已在 System B 检测流程接入离线事件队列，并提供 `/api/offline_events`、`/api/offline_events/ack`。
 - 已增加手动 `/api/offline_events/sync` HTTP 同步入口：通过 `AGRIVISION_EVENTS_SINK_URL` 显式启用，仅允许 HTTPS 远端或本机 HTTP，并在 2xx 成功后确认删除事件。
 - MQTT、断点续传和真实 ESP32 断网恢复联调仍未完成；这些必须用仿真设备和现场日志验收。
-- 量化模型、边缘推理、Docker/服务管理部署列为后续工作。
+- 量化模型、边缘推理、跨主机任务协调和真实 ESP32 断网恢复仍列为后续工作；System B 的单机 Docker/标准启动基线已在阶段 2 完成。
 
 ## 阶段 5：可靠同步契约（基础项已完成）
 

@@ -1,0 +1,12 @@
+.git
+.github
+tests
+docs/images/promo_poster.png
+**/detection_logs
+**/offline_events
+**/*.pt
+**/*.pth
+**/*.onnx
+__pycache__
+*.pyc
+.venv

@@ -9,7 +9,7 @@ AgriVision System A — 智能大棚病虫害诊断站（FastAPI 后端）
   5. Qwen2-VL-2B      — 视觉语言模型生成诊断报告
 
 依赖: database.py（SQLite 历史/缓存/任务）、frontend.html（前端页面）
-启动: uvicorn app_fastapi:app --host 0.0.0.0 --port 8000
+本机启动: uvicorn app_fastapi:app --host 127.0.0.1 --port 8000
 """
 
 import os
@@ -28,7 +28,7 @@ import onnxruntime as ort
 import torch
 import torch.nn.functional as F
 from pathlib import Path
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
@@ -47,6 +47,7 @@ from database import (
     cache_get, cache_set, clear_cache,
 )
 from evaluation import assess_confidence
+from security import ApiSecurity
 
 # ======================== 路径配置 ========================
 BASE_DIR = Path(__file__).parent
@@ -267,6 +268,28 @@ class HistoryItem(BaseModel):
 # ======================== FastAPI 实例 ========================
 app = FastAPI(title="大棚病虫害诊断 API", version="2.1")
 logger = logging.getLogger("agrivision.system_a")
+api_security = ApiSecurity.from_env()
+
+
+@app.middleware("http")
+async def api_security_middleware(request: Request, call_next):
+    """Protect inference/history APIs while leaving health and docs public."""
+    if request.method != "OPTIONS":
+        remote_addr = request.client.host if request.client else ""
+        decision = api_security.authorize(request.url.path, remote_addr, request.headers)
+        if decision.status == "deny":
+            status_code = 503 if decision.reason == "api_auth_not_configured" else 401
+            return JSONResponse(
+                {"detail": "API token required" if status_code == 503 else "Invalid API token"},
+                status_code=status_code,
+            )
+        if decision.status == "rate_limited":
+            return JSONResponse(
+                {"detail": "Rate limit exceeded"},
+                status_code=429,
+                headers={"Retry-After": str(decision.retry_after)},
+            )
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -518,8 +541,13 @@ def background_diagnose(task_id: str, contents: bytes):
             probabilities=pred_result["probabilities"],
         )
         update_task(task_id, "done", result)
-    except Exception as e:
-        update_task(task_id, "failed", {"error": str(e)})
+    except Exception as exc:
+        logger.error(
+            "background_diagnose_failed event=background_diagnose_failed task_id=%s error_type=%s",
+            task_id,
+            type(exc).__name__,
+        )
+        update_task(task_id, "failed", {"error": "诊断失败，请重试"})
 
 
 # ======================== 路由 ========================
@@ -652,7 +680,7 @@ async def get_result(task_id: str):
         # 缓存已在 background_diagnose 中处理
         resp["result"] = task["result"]
     elif task["status"] == "failed":
-        resp["error"] = task["result"].get("error", "未知错误") if task["result"] else "未知错误"
+        resp["error"] = "诊断失败，请重试"
 
     return resp
 

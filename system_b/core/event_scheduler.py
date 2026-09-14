@@ -3,6 +3,11 @@
 import logging
 import threading
 
+try:
+    from .observability import log_event
+except ImportError:
+    from observability import log_event
+
 
 class EventSyncScheduler:
     """Run a supplied sync callback at a bounded interval in a daemon thread."""
@@ -52,4 +57,8 @@ class EventSyncScheduler:
             try:
                 self._sync_once()
             except Exception:
-                self._logger.exception("offline event scheduler callback failed")
+                log_event(
+                    self._logger,
+                    logging.ERROR,
+                    "offline_event_scheduler_callback_failed",
+                )

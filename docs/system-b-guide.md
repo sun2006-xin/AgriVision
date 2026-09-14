@@ -25,10 +25,10 @@ System B 是 AgriVision 的**实时病虫害监控子系统**，基于 Flask 构
 | 能力 | 说明 |
 |------|------|
 | 双引擎检测 | OpenCV 颜色阈值引擎 + YOLOv8 深度学习引擎，DualVerifier 融合决策 |
-| 多摄像头 | 支持同时接入多个 ESP32-CAM，每路独立检测线程 |
+| 多摄像头 | 支持同时接入多个 ESP32-CAM，每路独立任务队列和运行状态 |
 | 实时监控 | MJPEG 视频流 + 2 秒轮询状态刷新 |
 | 告警通知 | 钉钉 Webhook 推送，分级冷却机制 |
-| 数据管理 | 30 天自动归档、分页查询、趋势图表、ZIP 导出 |
+| 数据管理 | SQLite 历史库、30 天自动归档、分页查询、趋势图表、ZIP 导出 |
 | SD 卡同步 | ESP32-CAM 自动拍照存卡，服务端定时拉取 |
 | A-B 浅连接 | 一键调用 System A 五引擎深度诊断 |
 | 大屏看板 | `/dashboard` 多路网格同时监控 |
@@ -47,7 +47,12 @@ System B 是 AgriVision 的**实时病虫害监控子系统**，基于 Flask 构
 ```
 system_b/
 ├── core/
-│   ├── app.py                  # Flask 主程序 (~2800 行, 含嵌入前端)
+│   ├── app.py                  # Flask 组装入口与设备/页面适配层
+│   ├── routes/                 # monitoring、history、storage、engineering
+│   ├── services/               # API 认证/限流、Prometheus 指标
+│   ├── workers/                # 每摄像头有界任务队列和可停止 worker
+│   ├── repositories/           # 参数化 SQLite 历史访问
+│   ├── schemas/                # 请求白名单、类型、范围校验
 │   ├── detection_enhanced.py   # OpenCV 颜色阈值检测引擎
 │   ├── dual_verifier.py        # 双引擎融合决策器
 │   ├── yolo_detector.py        # YOLOv8 检测器封装
@@ -57,7 +62,8 @@ system_b/
 │   ├── config/
 │   │   └── detection_params.json   # 检测参数持久化
 │   └── detection_logs/
-│       ├── history.json        # 历史记录数据
+│       ├── history.db          # SQLite 历史记录（运行时生成）
+│       ├── history.json        # 旧版本迁移来源（可选）
 │       └── images/             # 标注图片存档
 ├── firmware/
 │   └── CameraWebServer.ino     # ESP32-CAM 固件
@@ -245,7 +251,7 @@ cameras[cid]["state"] = {
 
 ### 3.3 检测循环
 
-每个启用的摄像头启动独立的 `detection_loop` 守护线程，每 3 秒执行一次 `run_detection_once()`：
+每个启用的摄像头由 `CameraTaskManager` 创建独立的 detection 有界队列和周期 worker，每 3 秒投递一次 `run_detection_once()`：
 
 ```
 run_detection_once(camera_id):
@@ -356,6 +362,8 @@ cooldown_seconds = 300  # 同一等级在冷却期内不重复发送
 - `POST /api/alert/config` -- 更新 webhook_url / enabled / cooldown_seconds
 - `POST /api/alert/test` -- 发送测试告警验证 Webhook 连通性
 
+Webhook URL 必须命中 `AGRIVISION_WEBHOOK_ALLOWED_HOSTS`（默认包含钉钉主机），远程地址必须使用 HTTPS。签名密钥通过 `AGRIVISION_ALERT_WEBHOOK_SECRET` 注入并用于 HMAC-SHA256，不会由 API 或前端回显；配置 GET 只返回脱敏主机名。页面的空 URL 输入不会覆盖已有配置，如需清除请在受保护 API 中显式提交空字符串。
+
 ---
 
 ## 6. SD 卡同步
@@ -364,7 +372,7 @@ cooldown_seconds = 300  # 同一等级在冷却期内不重复发送
 
 SD 卡同步实现 ESP32-CAM 本地存储与服务端的图片同步，有两种触发方式：
 
-**自动同步** (后台守护线程，每 300 秒):
+**自动同步**（每摄像头独立的周期 worker，每 300 秒投递任务）:
 
 ```
 sd_sync_loop(camera_id):
@@ -378,7 +386,7 @@ sd_sync_loop(camera_id):
 **手动触发** (用户点击"立即同步"按钮):
 
 ```
-POST /api/sync_now → 启动临时守护线程执行 sync_sd_card()
+GET /api/sync_now → 向对应摄像头的 `sd_sync` 有界队列投递任务；重复任务直接返回 `started=false`
 前端轮询 /api/sync_status 直到 syncing=false
 ```
 
@@ -387,12 +395,12 @@ POST /api/sync_now → 启动临时守护线程执行 sync_sd_card()
 用户点击"拍照存卡"按钮:
 
 ```
-GET /api/save_to_sd → 启动临时守护线程执行 save_to_sd_async():
+GET /api/save_to_sd → 向对应摄像头的 `save_to_sd` 有界队列投递 `save_to_sd_async()`:
   1. GET {base}/save → 触发 ESP32 立即拍照并写入 SD 卡
   2. 等待 2 秒 (确保写入完成)
   3. 更新拍照状态 (done/file/error)
 
-前端轮询 /api/save_status 直到 done=true
+前端使用同一 `camera_id` 轮询 /api/save_status 直到 done=true；不同摄像头的状态互不覆盖
 拍照成功后自动触发一次 SD 卡同步
 ```
 
@@ -721,6 +729,19 @@ System B 使用 `offline_events/.sync-lock.db` 的 SQLite `BEGIN IMMEDIATE` 作�
 | `/api/alert/history` | GET | 获取告警历史 |
 | `/api/alert/test` | POST | 发送测试告警 |
 
+告警配置的 URL 必须命中允许主机列表，远程 URL 必须使用 HTTPS；签名 secret 只从 `AGRIVISION_ALERT_WEBHOOK_SECRET` 读取。GET 配置和页面只显示脱敏主机名，不返回 query token 或 secret。空输入不会覆盖已配置的 URL；如需清除配置，使用受保护的 API 显式提交空字符串。
+
+### 9.10.1 工程化状态接口
+
+| 路径 | 方法 | 说明 |
+|------|------|------|
+| `/api/tasks` | GET | 每摄像头各任务的排队、运行、完成和失败计数 |
+| `/metrics` | GET | HTTP 延迟、推理耗时、队列深度、检测错误和告警结果 |
+
+`/api/*` 和 `/metrics` 需要认证。回环开发且未配置 token 时可访问；远程部署必须设置 `AGRIVISION_API_TOKEN`，支持 `Authorization: Bearer ...` 或 `X-API-Key`。`AGRIVISION_API_RATE_LIMIT_MAX` 与 `AGRIVISION_API_RATE_LIMIT_WINDOW` 提供按来源地址的有界限流。System A 共享同一 token 边界，System B 代理请求 `/report` 时会自动带上 `AGRIVISION_SYSTEM_A_API_TOKEN`，未设置时回退到 `AGRIVISION_API_TOKEN`。
+
+远程打开内嵌监控页面时，页面第一次收到 401 会提示输入 token，并只保存到当前浏览器会话的 `sessionStorage`；不会把 token 拼接到 URL。脚本客户端应直接设置上述请求头。
+
 ### 9.11 健康检查接口
 
 | 路径 | 方法 | 说明 |
@@ -743,7 +764,7 @@ System B 使用 `offline_events/.sync-lock.db` 的 SQLite `BEGIN IMMEDIATE` 作�
 
 流程: 获取当前帧 → JPEG 编码 → POST 到 System A `/report` → 返回诊断报告 (超时 180 秒)
 
-代理请求使用 multipart 字段 `file`，与 System A `/report` 的 `UploadFile` 参数保持一致。System A 默认 CORS 仅允许本机 A/B 地址；跨主机部署时应设置 `CORS_ORIGINS` 环境变量。
+代理请求使用 multipart 字段 `file`，与 System A `/report` 的 `UploadFile` 参数保持一致。System A 的业务 API 也受 token/限流保护；默认 CORS 仅允许本机 A/B 地址，跨主机部署时应设置 `CORS_ORIGINS` 环境变量，并在 A/B 两端使用同一 token 或显式配置 A 的服务 token。
 
 ### 9.13 视频流接口
 
@@ -776,7 +797,7 @@ cd /d "%~dp0system_b\core"
 if not exist "..\.venv\Scripts\activate" (
     python -m venv ..\.venv
     call ..\.venv\Scripts\activate
-    pip install flask opencv-python numpy requests ultralytics -i https://mirrors.aliyun.com/pypi/simple/
+    pip install -r "..\..\requirements-b.txt"
 )
 
 :: 启动后端
@@ -796,6 +817,8 @@ start "" "http://127.0.0.1:5000"
 3. 在新窗口中启动 Flask 后端 (`python app.py`)
 4. 等待 3 秒初始化 (首次检测 + 后台线程启动)
 5. 自动打开浏览器访问 `http://127.0.0.1:5000`
+
+默认服务只监听 `127.0.0.1`。需要远程访问时，先设置 `AGRIVISION_BIND_HOST` 和至少 16 个字符的 `AGRIVISION_API_TOKEN`；不要直接把 token 写进批处理文件或仓库。也可运行 `powershell -ExecutionPolicy Bypass -File deploy/start_system_b.ps1 -InstallDependencies`。
 
 ### 10.3 前置条件
 
@@ -826,18 +849,14 @@ start "" "http://127.0.0.1:5000"
 │     threaded=True 支持多客户端并发                        │
 ├─────────────────────────────────────────────────────────┤
 │                                                         │
-│  守护线程 (per camera, daemon=True)                      │
+│  CameraTaskManager（每 camera / task 独立）              │
 │  ┌─────────────────────┐  ┌─────────────────────┐       │
-│  │ detection_loop      │  │ sd_sync_loop        │       │
-│  │ 每 3 秒检测一次      │  │ 每 300 秒同步一次    │       │
-│  │ run_detection_once() │  │ sync_sd_card()      │       │
+│  │ detection queue     │  │ sd_sync queue       │       │
+│  │ 每 3 秒投递一次      │  │ 每 300 秒投递一次    │       │
 │  └─────────────────────┘  └─────────────────────┘       │
-│                                                         │
-│  临时守护线程 (按需创建, 完成后销毁)                       │
-│  ┌─────────────────────┐  ┌─────────────────────┐       │
-│  │ save_to_sd_async    │  │ sync_sd_card        │       │
-│  │ 用户点击拍照时创建    │  │ 用户点击同步时创建    │       │
-│  └─────────────────────┘  └─────────────────────┘       │
+│  ┌─────────────────────┐                                │
+│  │ save_to_sd queue    │  用户触发时投递，重复则拒绝      │
+│  └─────────────────────┘                                │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -849,16 +868,17 @@ if __name__ == '__main__':
     for cid, cam in cameras.items():
         run_detection_once(cid)
 
-        # 2. 启动检测守护线程 (每 3 秒循环检测)
-        det_thread = threading.Thread(target=detection_loop, args=(cid,), daemon=True)
-        det_thread.start()
-
-        # 3. 启动 SD 同步守护线程 (每 300 秒循环同步)
-        sd_thread = threading.Thread(target=sd_sync_loop, args=(cid,), daemon=True)
-        sd_thread.start()
+        # 2. 注册每摄像头可停止的检测和 SD 同步周期任务
+        camera_task_manager.start_periodic(
+            cid, "detection", lambda cid=cid: run_detection_once(cid), 3
+        )
+        camera_task_manager.start_periodic(
+            cid, "sd_sync", lambda cid=cid: sync_sd_card(cid), SD_SYNC_INTERVAL
+        )
 
     # 4. 启动 Flask 服务器 (阻塞主线程)
-    app.run(host='0.0.0.0', port=5000, debug=False, threaded=True)
+    bind_host = os.environ.get("AGRIVISION_BIND_HOST", "127.0.0.1")
+    app.run(host=bind_host, port=5000, debug=False, threaded=True)
 ```
 
 ### 11.3 线程安全
@@ -866,11 +886,12 @@ if __name__ == '__main__':
 | 锁 | 保护对象 | 使用场景 |
 |----|----------|----------|
 | `frame_lock` (per camera) | 摄像头状态字典 | 检测线程写入 / API 线程读取 |
-| `sd_lock` | SD 同步状态 `sd_sync_info` | 同步线程 / API 线程 |
-| `save_sd_lock` | 拍照状态 `save_sd_info` | 拍照线程 / API 线程 |
+| `sd_lock` | 每摄像头 SD 同步状态 | 同步 worker / API 线程 |
+| `save_sd_lock` | 每摄像头拍照状态 | 拍照 worker / API 线程 |
 | `config_lock` | 配置管理器 | 参数读写 / 检测线程读取 |
 | `_inference_lock` (YOLODetector) | YOLO 模型推理 | 多线程推理互斥 |
-| `_lock` (HistoryManager) | 历史记录文件 | 写入/查询/导出互斥 |
+| `CameraTaskManager` 内部锁 | 每摄像头任务槽位和队列 | 投递、运行、停止和计数 |
+| SQLite 事务 | `detection_records` 历史表 | 写入/查询/导出并发 |
 
 ### 11.4 关键常量
 

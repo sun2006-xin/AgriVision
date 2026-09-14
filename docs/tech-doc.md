@@ -26,6 +26,7 @@ AgriVision/
 │   │   ├── app_fastapi.py         # FastAPI 后端 (五引擎)
 │   │   ├── frontend.html          # 前端单页面
 │   │   ├── database.py            # SQLite 数据层
+│   │   ├── security.py            # Bearer/X-API-Key、回环边界和有界限流
 │   │   ├── deploy_ai.py           # 独立桌面推理工具(遗留)
 │   │   ├── convert_to_onnx.py     # PyTorch->ONNX 导出
 │   │   ├── train_classifier.py    # ResNet-18 训练脚本
@@ -38,6 +39,11 @@ AgriVision/
 ├── system_b\                      # System B: 实时监控系统
 │   ├── core\                      # 核心代码
 │   │   ├── app.py                 # Flask 主应用
+│   │   ├── routes\                # 健康、监控、历史、设备存储路由
+│   │   ├── services\              # 认证/限流、指标等横切服务
+│   │   ├── workers\               # 每摄像头有界任务队列与可停止 worker
+│   │   ├── repositories\          # SQLite 历史数据访问层
+│   │   ├── schemas\               # 请求白名单、类型和范围校验
 │   │   ├── detection_enhanced.py  # 颜色阈值引擎
 │   │   ├── dual_verifier.py       # 双引擎融合器
 │   │   ├── yolo_detector.py       # YOLO引擎封装
@@ -56,7 +62,7 @@ AgriVision/
 |------|----------|----------|
 | Web框架 | FastAPI (异步) | Flask (多线程) |
 | 前端 | 纯HTML/JS单文件 | Flask内嵌HTML(4个Tab) |
-| 数据库 | SQLite | JSON文件 |
+| 数据库 | SQLite | SQLite（旧 history.json 首次启动迁移） |
 | AI引擎1 | ResNet-18 ONNX (12类分类) | OpenCV HSV颜色阈值 |
 | AI引擎2 | YOLOv8n (2类检测) | YOLOv8 (2类检测) |
 | AI引擎3 | YOLOv8n-seg (COCO分割) | - |
@@ -177,14 +183,37 @@ ESP32-CAM -> fetch_image() -> run_detection_once()
 
 ### 3.4 线程模型
 
-| 线程 | 功能 | 周期 |
-|------|------|------|
-| 主线程 | Flask服务器 | - |
-| 守护线程1 | detection_loop | 每3秒 |
-| 守护线程2 | sd_sync_loop | 每300秒 |
-| 临时线程 | save_to_sd_async / sync_sd_card | 按需 |
+| 组件 | 功能 | 生命周期 |
+|------|------|----------|
+| Flask 主线程/请求线程 | 页面与 API 请求 | 服务运行期间 |
+| `CameraTaskManager` | 每个摄像头分别维护 detection、sd_sync、save_to_sd 有界队列和 worker | 服务运行期间，可停止 |
+| 周期调度 worker | 向对应摄像头任务队列投递检测或同步任务 | 服务运行期间，可停止 |
+| 离线事件调度器 | 有界批次同步与退出清理 | 默认关闭，显式配置后运行 |
 
-### 3.5 API 端点清单
+队列满或同一摄像头同一任务正在运行时，新的任务会被拒绝而不会无限堆积；`GET /api/tasks` 返回队列深度、运行状态、完成数和失败数。任务 worker 使用 daemon 线程，但服务退出时会主动调用 `stop_all()`。
+
+### 3.5 System B 工程化模块
+
+System B 以 `app.py` 作为依赖组装入口，业务边界分别位于以下模块：
+
+| 目录 | 职责 |
+|------|------|
+| `routes/monitoring.py` | 健康探针、摄像头清单、实时/双引擎只读状态 |
+| `routes/history.py` | 历史分页、趋势、统计、导出和图片读取 |
+| `routes/storage.py` | SD 图片、拍照和同步任务触发/状态 |
+| `routes/engineering.py` | `/metrics` 与 `/api/tasks` |
+| `services/metrics.py` | 固定标签的 Prometheus 指标注册表 |
+| `services/security.py` | System B 的 Bearer/X-API-Key、回环开发边界和有界限流 |
+| `services/storage.py` | 摄像头文件列表的单层路径、扩展名和数量校验 |
+| `workers/camera_tasks.py` | 每摄像头任务队列、锁、周期调度和停止 |
+| `repositories/history_repository.py` | 参数化 SQLite 查询、索引、迁移和聚合 |
+| `schemas/api.py` | JSON 白名单、类型、有限值、范围和关联约束 |
+
+System A 使用 `system_a/core/security.py` 实施同一 token 环境变量约定；标准启动脚本为 `deploy/start_system_a.ps1` 和 `deploy/start_system_b.ps1`。
+
+历史服务默认数据库是 `system_b/core/detection_logs/history.db`。旧版 `history.json` 只在数据库为空时迁移一次；日常分页、趋势和统计不会把整个 JSON 文件加载进内存。
+
+### 3.6 API 端点清单
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
@@ -193,6 +222,8 @@ ESP32-CAM -> fetch_image() -> run_detection_once()
 | GET | /api/status | 最新检测结果+SD状态 |
 | GET | /api/dual_status | 双引擎融合结果 |
 | GET | /api/yolo_stats | YOLO运行统计 |
+| GET | /api/tasks | 每摄像头任务队列和 worker 状态 |
+| GET | /metrics | Prometheus 文本指标 |
 | POST | /api/yolo/config | YOLO参数配置 |
 | GET | /api/comparison | 双引擎对比历史(100帧) |
 | GET/POST | /api/alert/config | 钉钉告警配置 |
@@ -274,12 +305,23 @@ MQTT 发布器将 Paho `RuntimeError` 与其他发布失败统一纳入有界重
 
 离线事件自动同步默认关闭。设置 `AGRIVISION_EVENTS_SYNC_INTERVAL` 为正数（秒）后启用周期调度，可选 `AGRIVISION_EVENTS_SYNC_LIMIT` 控制每批 1–100 条（默认 50）；调度优先使用 MQTT，否则使用 HTTP sink。间隔为 0 或未配置传输器时不自动外发。
 
-### 3.6 启动方式
+### 3.7 认证、限流与告警配置
+
+System A 和 System B 使用同一组 token 环境变量。System B 的 `/api/*`、`/metrics`，以及 System A 的推理、异步结果和历史 API 受安全层保护：
+
+- 本机无 token 时允许回环开发请求；远程请求默认拒绝。
+- 设置 `AGRIVISION_API_TOKEN` 后使用 `Authorization: Bearer <token>` 或 `X-API-Key`，token 不写入日志和响应。
+- `AGRIVISION_API_RATE_LIMIT_MAX` 与 `AGRIVISION_API_RATE_LIMIT_WINDOW` 控制按来源地址的进程内固定窗口限流。
+- System A 保留 `/health/live`、`/health/ready` 和 `/docs` 公开，便于探针与接口发现；其他业务路径需要认证。System B 调用 System A `/report` 时使用 `AGRIVISION_SYSTEM_A_API_TOKEN`，未设置时回退到 `AGRIVISION_API_TOKEN`。
+- `AGRIVISION_ALERT_WEBHOOK_URL` 仅允许允许列表中的 HTTPS 主机；`AGRIVISION_WEBHOOK_ALLOWED_HOSTS` 显式扩展主机列表。
+- `AGRIVISION_ALERT_WEBHOOK_SECRET` 仅从环境变量读取，用于 HMAC-SHA256 签名；配置接口只返回脱敏主机名，不返回 query token 或 secret。
+
+### 3.8 启动方式
 
 ```bash
 cd system_b/core
 python app.py
-# Flask 运行在 0.0.0.0:5000
+# 默认运行在 127.0.0.1:5000；System A 默认运行在 127.0.0.1:8000；远程绑定前必须设置 AGRIVISION_API_TOKEN
 ```
 
 ---
@@ -374,10 +416,14 @@ start_all.bat
 
 ### 6.2 System B 服务器部署
 
-1. **固定 IP / 域名** — ESP32-CAM 需要能访问到服务器
-2. **防火墙** — 开放 5000 端口 (或 Nginx 代理)
-3. **多摄像头** — 修改 cameras.json 添加多个 ESP32-CAM
-4. **钉钉告警** — 在监控界面配置 Webhook URL
+1. **固定 IP / 域名** — ESP32-CAM 需要能访问到服务器；对外监听前设置 `AGRIVISION_API_TOKEN`
+2. **防火墙/反向代理** — 仅开放 Nginx/HTTPS 入口，System B 默认只监听回环地址
+3. **多摄像头** — 修改 `cameras.json` 添加多个 ESP32-CAM；每路任务状态相互隔离
+4. **历史数据** — 将 `system_b/core/detection_logs/` 挂载到持久化磁盘，数据库为 `history.db`
+5. **钉钉告警** — 通过环境变量注入 URL、允许主机和签名 secret，不把 token 写入仓库
+6. **容器部署** — 在项目根目录执行 `docker compose -f docker-compose.system-b.yml up --build`；Compose 强制要求 `AGRIVISION_API_TOKEN`
+
+常用环境变量模板见 [`.env.example`](../.env.example)，标准启动脚本为 `deploy/start_system_a.ps1` 和 `deploy/start_system_b.ps1`。部署探针使用 `/health/live`，模型和摄像头就绪状态使用 `/health/ready`；后者返回 503 不代表进程已退出。
 
 详细步骤参见 [System B 文档](system-b-guide.md)。
 

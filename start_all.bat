@@ -8,7 +8,7 @@ echo ========================================================
 echo.
 
 echo [System A] Starting AI Diagnosis Station...
-start "AgriVision-A" cmd /k "cd /d "%~dp0system_a\core" && if exist ..\.venv\Scripts\activate (call ..\.venv\Scripts\activate) else (echo Please run start_a.bat first to init environment) && uvicorn app_fastapi:app --reload --host 0.0.0.0 --port 8000"
+start "AgriVision-A" cmd /k "cd /d "%~dp0system_a\core" && if exist ..\.venv\Scripts\activate (call ..\.venv\Scripts\activate) else (echo Please run start_a.bat first to init environment) && uvicorn app_fastapi:app --reload --host 127.0.0.1 --port 8000"
 
 echo Waiting for System A init (3s)...
 timeout /t 3 /nobreak >nul

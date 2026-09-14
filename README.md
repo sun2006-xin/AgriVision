@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.9+-blue?logo=python" alt="Python">
+  <img src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python" alt="Python">
   <img src="https://img.shields.io/badge/License-Apache--2.0-green" alt="License">
   <img src="https://img.shields.io/badge/System_A-FastAPI-009688?logo=fastapi" alt="System A">
   <img src="https://img.shields.io/badge/System_B-Flask-000?logo=flask" alt="System B">
@@ -68,7 +68,7 @@ ESP32-CAM / IP摄像头 → MJPEG 流 → OpenCV HSV 检测 + YOLOv8 检测 → 
 
 ### 浅耦合集成
 
-System B 的 Web 监控面板提供"深度诊断"按钮，点击后将当前帧图片发送到 System A 的 `/diagnose` API，获取五引擎融合报告并展示。两个系统可独立部署、独立运行。
+System B 的 Web 监控面板提供"深度诊断"按钮，点击后将当前帧图片以 `file` multipart 字段发送到 System A 的 `/report` API，获取五引擎融合报告并展示。两个系统可独立部署、独立运行。
 
 ## 快速开始
 
@@ -129,9 +129,9 @@ start_a.bat    # System A → http://127.0.0.1:8000
 start_b.bat    # System B → http://127.0.0.1:5000
 
 # 方式三：手动命令
-# System A
+# System A（本机默认回环地址）
 cd system_a/core
-python -m uvicorn app_fastapi:app --host 0.0.0.0 --port 8000
+python -m uvicorn app_fastapi:app --host 127.0.0.1 --port 8000
 
 # System B
 cd system_b/core
@@ -166,6 +166,11 @@ AgriVision/
 ├── system_b/                    # System B: Flask 双引擎实时监控
 │   ├── core/
 │   │   ├── app.py               # Flask 主服务 (多摄像头+检测+告警)
+│   │   ├── routes/               # 健康、监控、历史、设备存储路由
+│   │   ├── services/             # 认证/限流、指标等横切服务
+│   │   ├── workers/              # 每摄像头有界任务队列与可停止 worker
+│   │   ├── repositories/          # SQLite 历史数据访问层
+│   │   ├── schemas/              # 请求白名单、类型和范围校验
 │   │   ├── detection_enhanced.py # OpenCV HSV 颜色检测引擎
 │   │   ├── yolo_detector.py     # YOLOv8 目标检测引擎
 │   │   ├── dual_verifier.py     # 双引擎融合验证器
@@ -200,7 +205,7 @@ AgriVision/
 | **AI 推理** | ONNX Runtime · PyTorch · Ultralytics YOLOv8 · Transformers · Chinese-CLIP · Qwen2-VL |
 | **图像处理** | OpenCV · Pillow |
 | **前端** | 原生 HTML/CSS/JS 单文件 SPA (无框架依赖) |
-| **数据存储** | SQLite (诊断历史 · 结果缓存 · 异步任务) |
+| **数据存储** | SQLite（System A 诊断数据 · System B 检测历史） |
 | **告警通知** | 钉钉 Webhook (三级告警: 通知/警告/严重) |
 | **边缘设备** | ESP32-CAM (Arduino · MJPEG · SD卡自动存储) |
 | **通信协议** | HTTP REST · MQTT (巴法云, ESP8266 环境控制) |
@@ -216,7 +221,19 @@ AgriVision/
 
 ## 当前版本说明
 
-阶段 1 已完成基础可用性收敛，阶段 2 已完成工程化基础，阶段 3 已完成评估基础，阶段 4/5/6/7/8/9/10/11/12/13/14/15/16/17/18/19/20/21/22/23/24/25/26/27/28/29/30/31/32 已完成边缘离线队列、可靠 HTTP 同步、本地端到端、本机 HTTP 回环、开源发布 CI 门禁、CI 云端证据、MQTT 传输契约、连接安全边界、可选 Paho 运行时、Paho 云端回归、本机 MQTT 协议验收、System B MQTT 手动同步接入、初始连接重试、运行中断线重连、默认关闭的自动同步、同步状态可观测性、同主机跨进程互斥、HTTP 错误分类重试、本机 TLS 证书验收、本机 TLS 认证验收、全连接 CONNACK 验收、失败连接重试生命周期验收、CONNACK 等待边界验收、发布确认等待边界验收、关闭生命周期验收、发布状态异常重试、MQTT 配置状态可观测性和事件同步状态面板验收基础：修复 A/B 接口契约，增加参数校验、健康探针、请求观测、原子配置写入、固定 JSON 预测集评估、低置信度标记、有界检测事件缓存、幂等键、并发防护、响应丢失重试验证、真实本机 HTTP/MQTT 请求验证、成功后确认的手动同步入口、跟踪文件隐私扫描、注入式 MQTT 发布契约、远端 TLS 约束、可关闭的 Paho 生命周期、显式 MQTT 手动同步路由、有界初始连接重试、运行中断线恢复验证、可控后台调度、脱敏状态接口、同主机多进程锁、4xx/5xx 分类处理、临时 CA 证书回归、MQTT v5 认证失败处理、无认证失败 CONNACK 拒绝、失败重试资源清理、可配置有界的 CONNACK 等待、可配置有界的发布确认等待、幂等安全关闭、Paho 发布状态异常有界重试、仅暴露超时数值的状态诊断和前端安全展示。模型权重默认保留在本地，不随 Git 仓库分发；首次使用前请按文档准备模型文件。
+阶段 1 已完成稳定运行基线，阶段 2 工程化目标已完成，阶段 3 已完成评估基础；阶段 4–45 持续完善了离线队列、HTTP/MQTT 同步、连接生命周期、错误分类、脱敏状态和本机回归。模型权重默认保留在本地，不随 Git 仓库分发；首次使用前请按文档准备模型文件。
+
+### 阶段 2 工程化落地
+
+- System B 已按边界拆出 `routes/`、`services/`、`workers/`、`repositories/` 和 `schemas/`；`app.py` 保留为依赖组装入口和现场设备/页面适配层。
+- 检测历史统一写入带索引的 SQLite `system_b/core/detection_logs/history.db`；旧 `history.json` 会在首次启动时迁移，分页、趋势和统计走数据库查询。
+- 每个摄像头拥有独立的检测、SD 同步和拍照任务队列，重复任务会被拒绝；可通过 `GET /api/tasks` 查看队列深度、运行状态、成功/失败计数。
+- `GET /metrics` 输出 HTTP 延迟、颜色/YOLO 推理耗时、队列长度、检测错误和告警发送结果；请求日志使用固定 JSON 字段和请求 ID。
+- System A/B 默认只监听本机回环地址。远程部署前为两个服务设置同一个 `AGRIVISION_API_TOKEN`；业务 API 使用 Bearer 或 `X-API-Key`，并启用按来源地址的有界限流。
+- System A 的 `/health/live`、`/health/ready` 保持公开；推理、异步结果和历史接口需要认证。System B 调用 System A `/report` 时自动携带服务端 token。
+- Webhook URL 通过允许列表和 HTTPS 约束，签名密钥只从环境变量读取，接口与页面均不回显 token/query/secret；参考 [.env.example](.env.example)、[Docker Compose 部署](docker-compose.system-b.yml) 和 [System B 指南](docs/system-b-guide.md)。
+
+本阶段的本机证据包括完整 unittest、源码编译、真实 Flask 路由检查和公开仓库隐私扫描；Docker 运行、反向代理、跨主机多实例以及真实 ESP32 长时间稳定性仍需在目标环境验收。
 
 阶段 33 进一步隔离事件同步状态刷新故障：状态接口暂时不可用时，实时检测页面仍保持刷新，并仅显示固定的脱敏提示。
 
@@ -278,9 +295,17 @@ MQTT 关闭回调支持重复调用且会吞掉断开异常、继续停止网络
 
 简要步骤（详见 [总体技术文档 - 服务器部署](docs/tech-doc.md#6-服务器部署概览)）：
 
-1. **System A**：安装 Python + CUDA + 模型文件 → `uvicorn app_fastapi:app` → Nginx 反向代理 → 配置 HTTPS
-2. **System B**：安装 Python + 模型文件 → `python app.py` → Nginx 反向代理 → 配置摄像头地址
+1. **System A**：安装 Python + CUDA + 模型文件 → 设置 `AGRIVISION_API_TOKEN` → `uvicorn app_fastapi:app` 或 `deploy/start_system_a.ps1` → Nginx 反向代理 → 配置 HTTPS
+2. **System B**：安装 Python + 模型文件 → 设置 `AGRIVISION_API_TOKEN` → `python app.py` → Nginx 反向代理 → 配置摄像头地址
 3. **ESP32-CAM**：Arduino IDE 编译固件 → 修改 `config.h` 中的 WiFi 和服务器地址
+
+System A/B 本机默认绑定回环地址；需要对外监听时必须配置至少 16 个字符的 `AGRIVISION_API_TOKEN`。也可以直接使用：
+
+```bash
+docker compose -f docker-compose.system-b.yml up --build
+```
+
+Docker Compose 会从环境变量或 `.env` 读取 token，模型目录以只读方式挂载，运行数据写入 Docker volume。详细认证、限流、Webhook 和探针说明见 [System B 指南](docs/system-b-guide.md) 与 [System A 指南](docs/system-a-guide.md)。
 
 > 中国网络环境注意：HuggingFace 模型下载需配置镜像源（`HF_ENDPOINT=https://hf-mirror.com`），pip 安装建议使用清华源。
 
