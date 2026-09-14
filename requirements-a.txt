@@ -24,5 +24,5 @@ qwen-vl-utils==0.0.14
 
 # Image processing
 opencv-python==4.11.0.86
-Pillow==12.2.0
+Pillow==12.3.0
 numpy==1.26.4
