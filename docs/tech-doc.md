@@ -313,7 +313,7 @@ MQTT 发布器将 Paho `RuntimeError` 与其他发布失败统一纳入有界重
 
 ### 第一阶段：稳定可运行验收
 
-第一阶段统一 System A 使用 `system_a/models/yolov8n.pt`、System B 使用 `system_b/models/best.pt`；当前分支实际追踪五个小型运行时权重，HuggingFace 缓存不随 Git 发布。发布前应确认权重再分发许可；若迁移到 Git LFS 或独立模型包，需同步更新启动脚本和文档。`requirements-a.txt`、`requirements-b.txt`、`requirements-test.txt`、`requirements-mqtt.txt` 与 `requirements-ui-test.txt` 均采用精确版本锁定，Python 统一要求 3.10+，CI 使用 3.11。启动脚本通过锁定文件安装依赖。
+第一阶段统一 System A 使用 `system_a/models/yolov8n.pt`、System B 使用 `system_b/models/best.pt`；当前分支实际追踪五个小型运行时权重，HuggingFace 缓存不随 Git 发布。发布前应确认权重再分发许可；若迁移到 Git LFS 或独立模型包，需同步更新启动脚本和文档。`requirements-a.txt`、`requirements-b.txt`、`requirements-test.txt`、`requirements-mqtt.txt` 与 `requirements-ui-test.txt` 固定直接依赖版本，但不是包含完整传递依赖树的锁文件；传递依赖仍由 pip 解析。Python 最低版本为 3.11，CI 使用 3.11。启动脚本按依赖清单安装。
 
 启动 System B 后，可运行 `python tools/api_smoke_phase1.py http://127.0.0.1:5000` 验收存活、就绪、参数元信息和非法参数拒绝；System B 到 System A 的深度诊断代理使用 multipart 字段 `file`，与 System A `/report` 的 `UploadFile(file=...)` 一致。
 
@@ -356,7 +356,7 @@ python app.py
 
 ### 5.1 环境要求
 
-- Python 3.10+ (推荐 3.11)
+- Python 3.11+
 - pip (阿里云镜像加速)
 - 模型文件 (见下方说明)
 

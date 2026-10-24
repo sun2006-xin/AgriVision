@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Python-3.10%2B-blue?logo=python" alt="Python">
+  <img src="https://img.shields.io/badge/Python-3.11%2B-blue?logo=python" alt="Python">
   <img src="https://img.shields.io/badge/License-Apache--2.0-green" alt="License">
   <img src="https://img.shields.io/badge/System_A-FastAPI-009688?logo=fastapi" alt="System A">
   <img src="https://img.shields.io/badge/System_B-Flask-000?logo=flask" alt="System B">
@@ -74,7 +74,7 @@ System B 的 Web 监控面板提供"深度诊断"按钮，点击后将当前帧�
 
 ### 环境要求
 
-- Python 3.10+（推荐 3.11）
+- Python 3.11+
 - CUDA 11.8+（GPU 推理可选，CPU 也可运行）
 - ESP32-CAM 开发板（可选，用于边缘采集）
 
@@ -116,7 +116,7 @@ system_b/models/
 
 > **提示**：当前分支实际追踪 `system_a/models/` 和 `system_b/models/` 下的五个小型权重；`hf_cache/`、数据库、日志和设备配置不进入 Git。发布前仍需确认这些权重的再分发许可；若改用 Git LFS 或独立模型包，必须同步更新本节和部署脚本。System A 使用 `best_model.onnx` / `yolov8n.pt`，System B 使用 `best.pt`。ResNet-18 模型可通过 `system_a/core/train_classifier.py` 自行训练，或使用 `convert_to_onnx.py` 从 `.pth` 导出 ONNX。
 
-依赖文件已使用 `==` 固定版本；Python 统一为 3.10+，公开 CI 使用 Python 3.11。启动脚本会直接安装对应的锁定文件，不再使用无版本安装清单。
+依赖清单使用 `==` 固定直接依赖版本；传递依赖仍由 pip 解析，当前尚未生成完整传递依赖锁文件。Python 最低版本为 3.11，公开 CI 使用 Python 3.11。启动脚本按对应依赖清单安装。
 
 ### 4. 启动服务
 
