@@ -926,7 +926,7 @@ yolo detect train model=yolov8n.pt data=data.yaml epochs=100
 
 ### 7.1 环境准备
 
-**Python 版本**: 3.10+
+**Python 版本**: 3.11+
 
 **依赖安装**:
 
@@ -1378,7 +1378,7 @@ sudo firewall-cmd --list-all
 ### 8.10 完整部署检查清单
 
 ```
-[ ] Python 3.10+ 已安装，虚拟环境已创建
+[ ] Python 3.11+ 已安装，虚拟环境已创建
 [ ] 所有依赖已安装（FastAPI, torch, ultralytics, transformers 等）
 [ ] models/ 目录下四个模型文件齐全
 [ ] hf_cache/ 下 Chinese-CLIP 和 Qwen2-VL 模型已缓存
